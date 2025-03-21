@@ -1,0 +1,30 @@
+export const ocrConfig = {
+  languages: [
+    { value: 'eng', label: 'English' },
+    { value: 'fra', label: 'French' },
+    { value: 'deu', label: 'German' },
+    { value: 'spa', label: 'Spanish' },
+    { value: 'ita', label: 'Italian' },
+    { value: 'por', label: 'Portuguese' },
+    { value: 'rus', label: 'Russian' },
+    { value: 'chi_sim', label: 'Chinese (Simplified)' },
+    { value: 'chi_tra', label: 'Chinese (Traditional)' },
+    { value: 'jpn', label: 'Japanese' },
+    { value: 'kor', label: 'Korean' },
+    { value: 'ara', label: 'Arabic' },
+  ],
+  documentTypes: [
+    { value: 'general', label: 'General Document' },
+    { value: 'invoice', label: 'Invoice' },
+    { value: 'receipt', label: 'Receipt' },
+    { value: 'id', label: 'ID Document' },
+    { value: 'contract', label: 'Contract' },
+    { value: 'letter', label: 'Letter' },
+    { value: 'form', label: 'Form' },
+  ],
+  qualityPresets: {
+    low: { value: 25, label: 'Low - Faster' },
+    standard: { value: 75, label: 'Standard' },
+    high: { value: 100, label: 'High - Slower' },
+  },
+}; 

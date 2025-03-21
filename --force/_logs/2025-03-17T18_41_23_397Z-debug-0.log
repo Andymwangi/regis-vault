@@ -1,0 +1,18 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Users\user\AppData\Roaming\npm\node_modules\npm\bin\npm-cli.js
+1 info using npm@10.9.0
+2 info using node@v18.18.0
+3 silly config load:file:C:\Users\user\AppData\Roaming\npm\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\user\regis-vault\.npmrc
+5 silly config load:file:C:\Users\user\.npmrc
+6 silly config load:file:C:\Users\user\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm clear
+8 verbose argv "clear" "--cache" "--force"
+9 verbose logfile logs-max:10 dir:C:\Users\user\regis-vault\--force\_logs\2025-03-17T18_41_23_397Z-
+10 verbose logfile C:\Users\user\regis-vault\--force\_logs\2025-03-17T18_41_23_397Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose cwd C:\Users\user\regis-vault
+13 verbose os Windows_NT 10.0.19045
+14 verbose node v18.18.0
+15 verbose npm  v10.9.0
+16 verbose exit 1
+17 verbose code 1
