@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import bcrypt from "bcrypt";
 import { db } from "@/lib/db/db";
-import { users, activityLogs } from "@/server/db/schema/schema";
+import { users, departments, activityLogs } from "@/server/db/schema/schema";
 import { eq } from "drizzle-orm";
 import { sendOtpEmail } from "@/lib/auth/email";
 import { getRedisInstance } from "@/lib/redis/redis";
@@ -13,7 +13,7 @@ const signUpSchema = z.object({
   lastName: z.string().min(2),
   email: z.string().email(),
   phoneNumber: z.string().min(10),
-  department: z.string(),
+  department: z.string().uuid(), // Expect a UUID for department
   role: z.string(),
   password: z.string().min(6),
 });
@@ -44,6 +44,18 @@ export async function POST(request: NextRequest) {
         { status: 409 }
       );
     }
+
+    // Verify department exists
+    const departmentRecord = await db.query.departments.findFirst({
+      where: eq(departments.id, department),
+    });
+
+    if (!departmentRecord) {
+      return NextResponse.json(
+        { message: "Selected department does not exist" },
+        { status: 400 }
+      );
+    }
     
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -54,7 +66,7 @@ export async function POST(request: NextRequest) {
       lastName,
       email,
       password: hashedPassword,
-      departmentId: department,
+      departmentId: department, // Use the department UUID directly
       role,
       status: "pending", // User requires email verification
     }).returning();
@@ -71,7 +83,7 @@ export async function POST(request: NextRequest) {
     
     // Log user creation
     await db.insert(activityLogs).values({
-      userId: parseInt(newUser.id),
+      userId: newUser.id,
       action: "ACCOUNT_CREATED",
       details: "New user account created",
     });

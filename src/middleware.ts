@@ -4,7 +4,6 @@ import { getToken } from 'next-auth/jwt';
 
 // Define public routes that don't require authentication
 const publicRoutes = [
-  '/',
   '/sign-in',
   '/sign-up',
   '/otp-verification',
@@ -32,8 +31,20 @@ export async function middleware(request: NextRequest) {
   const token = await getToken({ req: request });
   const { pathname } = request.nextUrl;
 
+  // Handle root path - redirect to sign-in if not authenticated, dashboard if authenticated
+  if (pathname === '/') {
+    if (!token) {
+      return NextResponse.redirect(new URL('/sign-in', request.url));
+    }
+    return NextResponse.redirect(new URL('/dashboard', request.url));
+  }
+
   // Allow public routes
   if (publicRoutes.some(route => pathname.startsWith(route))) {
+    // If user is already authenticated and tries to access auth pages, redirect to dashboard
+    if (token && (pathname.startsWith('/sign-in') || pathname.startsWith('/sign-up'))) {
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    }
     return NextResponse.next();
   }
 
@@ -56,13 +67,8 @@ export async function middleware(request: NextRequest) {
   // Check admin access for admin routes
   if (adminRoutes.some(route => pathname.startsWith(route))) {
     if (token.role !== 'admin') {
-      return NextResponse.redirect(new URL('/dashboard/files', request.url));
+      return NextResponse.redirect(new URL('/dashboard', request.url));
     }
-  }
-
-  // Redirect authenticated users away from auth pages
-  if (token && (pathname === '/sign-in' || pathname === '/sign-up')) {
-    return NextResponse.redirect(new URL('/dashboard/files', request.url));
   }
 
   // Add user info to headers for use in components

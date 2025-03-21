@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useEffect, useCallback } from 'react';
 import { File } from '@/types/file';
 import { FileTable } from './FileTable';

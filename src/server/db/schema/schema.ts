@@ -31,7 +31,7 @@ export const users = pgTable('users', {
 });
 
 export const departments = pgTable('departments', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
   allocatedStorage: integer('allocated_storage').default(0),
@@ -107,7 +107,7 @@ export const ocrResults = pgTable('ocr_results', {
 
 export const activityLogs = pgTable('activity_logs', {
   id: serial('id').primaryKey(),
-  userId: integer('user_id').references(() => users.id).notNull(),
+  userId: uuid('user_id').references(() => users.id).notNull(),
   action: varchar('action', { length: 255 }).notNull(),
   details: text('details'),
   createdAt: timestamp('created_at').defaultNow(),

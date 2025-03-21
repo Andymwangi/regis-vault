@@ -14,7 +14,7 @@ const sql = postgres(process.env.DATABASE_URL!, {
 async function migrate() {
   try {
     // Read the migration SQL file
-    const migrationPath = path.join(process.cwd(), 'drizzle', '0006_direct_uuid_conversion.sql');
+    const migrationPath = path.join(process.cwd(), 'drizzle', '0008_update_activity_logs_user_id.sql');
     const migrationSql = fs.readFileSync(migrationPath, 'utf-8');
 
     // Split SQL into individual statements

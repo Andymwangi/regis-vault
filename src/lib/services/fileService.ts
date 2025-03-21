@@ -9,7 +9,6 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs/promises';
 import path from 'path';
-import pdf from 'pdf-parse';
 
 export interface FileMetadata {
   id: string;
@@ -37,7 +36,7 @@ export class FileService {
 
     const where = [];
     if (departmentId && departmentId !== 'all') {
-      where.push(eq(files.departmentId, parseInt(departmentId)));
+      where.push(eq(files.departmentId, sql`${departmentId}::uuid`));
     }
     if (type && type !== 'all') {
       where.push(like(files.type, type === 'document' ? 'application/%' : `${type}/%`));
@@ -106,13 +105,13 @@ export class FileService {
       // Update files status to deleted
       await tx.update(files)
         .set({ status: 'deleted', updatedAt: new Date() })
-        .where(sql`id = ANY(${fileIds})`);
+        .where(sql`id = ANY(${fileIds}::uuid[])`);
 
       // Log the activity
       await tx.insert(activityLogs).values({
+        userId: sql`${session.user.id}::uuid`,
         action: 'DELETE_FILES',
-        details: `Deleted files: ${fileIds.join(', ')}`,
-        userId: parseInt(session.user.id)
+        details: `Deleted files: ${fileIds.join(', ')}`
       });
 
       return { success: true };
@@ -132,14 +131,14 @@ export class FileService {
           status,
           updatedAt: new Date()
         })
-        .where(eq(files.id, parseInt(fileId)))
+        .where(eq(files.id, sql`${fileId}::uuid`))
         .returning();
 
       // Log the activity
       await tx.insert(activityLogs).values({
+        userId: sql`${session.user.id}::uuid`,
         action: 'UPDATE_FILE_ACCESS',
-        details: `Updated file ${fileId} status to ${status}`,
-        userId: parseInt(session.user.id)
+        details: `Updated file ${fileId} status to ${status}`
       });
 
       return updatedFile;
@@ -197,7 +196,7 @@ export class FileService {
           text: ocrResults.text,
         })
         .from(ocrResults)
-        .where(eq(ocrResults.fileId, parseInt(file.id)));
+        .where(eq(ocrResults.fileId, sql`${file.id}::uuid`));
 
       if (existingResult) {
         return existingResult.text;
@@ -205,33 +204,53 @@ export class FileService {
 
       // Get file content from URL
       const response = await fetch(file.url);
+      if (!response.ok) {
+        console.error('Failed to fetch file:', response.statusText);
+        return null;
+      }
       const buffer = await response.arrayBuffer();
 
       let extractedText: string | null = null;
 
       if (file.type.includes('pdf')) {
-        // Parse PDF content
-        const pdfData = await pdf(Buffer.from(buffer));
-        extractedText = pdfData.text;
+        try {
+          // Lazy load pdf-parse only when needed
+          const pdf = (await import('pdf-parse')).default;
+          const pdfData = await pdf(Buffer.from(buffer));
+          extractedText = pdfData.text;
+        } catch (error) {
+          console.error('Error parsing PDF:', error);
+          return null;
+        }
       }
       
       if (file.type.includes('image')) {
-        // For images, use Tesseract OCR
-        const worker = await createWorker('eng');
-        const { data: { text } } = await worker.recognize(Buffer.from(buffer));
-        await worker.terminate();
-        extractedText = text;
+        try {
+          // For images, use Tesseract OCR
+          const worker = await createWorker('eng');
+          const { data: { text } } = await worker.recognize(Buffer.from(buffer));
+          await worker.terminate();
+          extractedText = text;
+        } catch (error) {
+          console.error('Error performing OCR:', error);
+          return null;
+        }
       }
       
       if (file.type.includes('text')) {
-        // For text files, convert buffer to string
-        extractedText = Buffer.from(buffer).toString('utf-8');
+        try {
+          // For text files, convert buffer to string
+          extractedText = Buffer.from(buffer).toString('utf-8');
+        } catch (error) {
+          console.error('Error reading text file:', error);
+          return null;
+        }
       }
 
       if (extractedText) {
         // Store the result in the database
         await db.insert(ocrResults).values({
-          fileId: parseInt(file.id),
+          fileId: sql`${file.id}::uuid`,
           text: extractedText,
         });
       }

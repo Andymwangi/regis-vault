@@ -1,5 +1,5 @@
 'use client'
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -24,6 +24,11 @@ import {
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 
+interface Department {
+  id: string;
+  name: string;
+}
+
 const formSchema = z.object({
   firstName: z.string().min(2, {
     message: "First name must be at least 2 characters.",
@@ -37,7 +42,7 @@ const formSchema = z.object({
   phoneNumber: z.string().min(10, {
     message: "Phone number must be at least 10 characters.",
   }),
-  department: z.string({
+  departmentId: z.string({
     required_error: "Please select a department.",
   }),
   role: z.string({
@@ -58,6 +63,22 @@ const formSchema = z.object({
 export function SignUpForm() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
+  const [departments, setDepartments] = useState<Department[]>([]);
+
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const response = await fetch('/api/departments');
+        if (!response.ok) throw new Error('Failed to fetch departments');
+        const data = await response.json();
+        setDepartments(data.departments);
+      } catch (error) {
+        console.error('Error fetching departments:', error);
+      }
+    };
+
+    fetchDepartments();
+  }, []);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -66,7 +87,7 @@ export function SignUpForm() {
       lastName: "",
       email: "",
       phoneNumber: "",
-      department: "",
+      departmentId: "",
       role: "",
       password: "",
       confirmPassword: "",
@@ -77,15 +98,16 @@ export function SignUpForm() {
   async function onSubmit(values: z.infer<typeof formSchema>) {
     setIsLoading(true);
     try {
-      // Call your API to sign up
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
+        body: JSON.stringify({
+          ...values,
+          department: values.departmentId, // Map departmentId to department for API compatibility
+        }),
       });
       
       if (response.ok) {
-        // Redirect to sign in
         router.push("/sign-in");
       } else {
         const data = await response.json();
@@ -167,7 +189,7 @@ export function SignUpForm() {
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
-                name="department"
+                name="departmentId"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Department</FormLabel>
@@ -178,11 +200,11 @@ export function SignUpForm() {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="finance">Finance</SelectItem>
-                        <SelectItem value="hr">HR</SelectItem>
-                        <SelectItem value="it">IT</SelectItem>
-                        <SelectItem value="management">Management</SelectItem>
-                        <SelectItem value="marketing">Marketing</SelectItem>
+                        {departments.map((dept) => (
+                          <SelectItem key={dept.id} value={dept.id}>
+                            {dept.name}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <FormMessage />
