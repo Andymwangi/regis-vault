@@ -1,9 +1,7 @@
 'use client';
 
 import { FC } from 'react';
-import { File } from '@/types/file';
-import { 
-  Table, 
+import { Table, 
   TableBody, 
   TableCell, 
   TableHead, 
@@ -15,7 +13,7 @@ import { Download, Trash2, Share2, RotateCcw } from 'lucide-react';
 import { formatFileSize, formatDate } from '@/lib/utils/format';
 
 interface FileTableProps {
-  files: File[];
+  files: FileData[];
   showOwner?: boolean;
   showDepartment?: boolean;
   showDeletedBy?: boolean;
@@ -25,11 +23,37 @@ interface FileTableProps {
   onRestore?: (fileId: string) => void;
   onPermanentDelete?: (fileId: string) => void;
   customActions?: Array<{
-    icon: any;
+    icon: React.ComponentType<{ className?: string }>;
     label: string;
     onClick: (fileId: string) => void;
     className?: string;
   }>;
+  loading?: boolean;
+}
+
+interface FileData {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  createdAt: string;
+  updatedAt: string;
+  owner: {
+    id: string;
+    name: string;
+    email: string;
+    firstName?: string;
+    lastName?: string;
+  };
+  department?: {
+    id: string;
+    name: string;
+  };
+  deletedBy?: {
+    id: string;
+    firstName?: string;
+    lastName?: string;
+  };
 }
 
 export const FileTable: FC<FileTableProps> = ({
@@ -43,6 +67,7 @@ export const FileTable: FC<FileTableProps> = ({
   onRestore,
   onPermanentDelete,
   customActions,
+  loading = false
 }) => {
   return (
     <Table>

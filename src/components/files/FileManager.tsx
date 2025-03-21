@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { File } from '@/types/file';
 import { FileTable } from './FileTable';
 import { FileUpload } from './FileUpload';
@@ -12,11 +12,7 @@ export function FileManager() {
   const [activeTab, setActiveTab] = useState('all');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchFiles();
-  }, [activeTab]);
-
-  const fetchFiles = async () => {
+  const fetchFiles = useCallback(async () => {
     try {
       setLoading(true);
       const response = await fetch(`/api/files?type=${activeTab}`);
@@ -28,7 +24,11 @@ export function FileManager() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [activeTab]);
+
+  useEffect(() => {
+    fetchFiles();
+  }, [fetchFiles]);
 
   const handleDelete = async (fileId: string) => {
     try {

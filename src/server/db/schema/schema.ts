@@ -160,15 +160,19 @@ export const departmentsRelations = relations(departments, ({ many }) => ({
   files: many(files),
 }));
 
-export default {
+export const schema = {
   users,
-  departments,
   files,
-  sharedFiles,
-  fileTags,
-  ocrResults,
+  departments,
+  activities,
   activityLogs,
   settings,
-  rateLimits,
+  sharedFiles,
+  tags,
+  fileTags,
+  ocrResults,
   sessions,
+  rateLimits,
 };
+
+export default schema;
