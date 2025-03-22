@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import bcrypt from "bcrypt";
 import { db } from "@/lib/db/db";
-import { users, departments, activityLogs } from "@/server/db/schema/schema";
+import { users, departments, activityLogs, userRoleEnum } from "@/server/db/schema/schema";
 import { eq } from "drizzle-orm";
 import { sendOtpEmail } from "@/lib/auth/email";
 import { getRedisInstance } from "@/lib/redis/redis";
@@ -14,7 +14,7 @@ const signUpSchema = z.object({
   email: z.string().email(),
   phoneNumber: z.string().min(10),
   department: z.string().uuid(), // Expect a UUID for department
-  role: z.string(),
+  role: z.enum(['admin', 'manager', 'user']),
   password: z.string().min(6),
 });
 
@@ -66,8 +66,8 @@ export async function POST(request: NextRequest) {
       lastName,
       email,
       password: hashedPassword,
-      departmentId: department, // Use the department UUID directly
-      role,
+      departmentId: department,
+      role: role as 'admin' | 'manager' | 'user',
       status: "pending", // User requires email verification
     }).returning();
     

@@ -12,6 +12,7 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
+  FormDescription,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import {
@@ -23,10 +24,12 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { toast } from "react-hot-toast";
 
 interface Department {
   id: string;
   name: string;
+  description: string;
 }
 
 const formSchema = z.object({
@@ -60,6 +63,12 @@ const formSchema = z.object({
   path: ["confirmPassword"],
 });
 
+const roleOptions = [
+  { value: 'user', label: 'User' },
+  { value: 'manager', label: 'Manager' },
+  { value: 'admin', label: 'Admin' },
+];
+
 export function SignUpForm() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
@@ -68,17 +77,41 @@ export function SignUpForm() {
   useEffect(() => {
     const fetchDepartments = async () => {
       try {
-        const response = await fetch('/api/departments');
-        if (!response.ok) throw new Error('Failed to fetch departments');
+        const response = await fetch('/api/departments', {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+            'Cache-Control': 'no-cache'
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Department API error response:', errorText);
+          throw new Error('Failed to fetch departments');
+        }
+
         const data = await response.json();
+        console.log('Fetched departments:', data);
+        
+        if (!data.departments || !Array.isArray(data.departments)) {
+          console.error('Invalid departments data:', data);
+          throw new Error('Invalid departments data received');
+        }
+
         setDepartments(data.departments);
       } catch (error) {
         console.error('Error fetching departments:', error);
+        toast.error('Failed to load departments');
       }
     };
 
     fetchDepartments();
   }, []);
+
+  useEffect(() => {
+    console.log('Current departments state:', departments);
+  }, [departments]);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -88,12 +121,19 @@ export function SignUpForm() {
       email: "",
       phoneNumber: "",
       departmentId: "",
-      role: "",
+      role: "user",
       password: "",
       confirmPassword: "",
       termsAccepted: false,
     },
   });
+
+  useEffect(() => {
+    const subscription = form.watch((value) => {
+      console.log('Form values:', value);
+    });
+    return () => subscription.unsubscribe();
+  }, [form]);
 
   async function onSubmit(values: z.infer<typeof formSchema>) {
     setIsLoading(true);
@@ -103,11 +143,12 @@ export function SignUpForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...values,
-          department: values.departmentId, // Map departmentId to department for API compatibility
+          department: values.departmentId,
         }),
       });
       
       if (response.ok) {
+        toast.success("Account created successfully. Please check your email for verification.");
         router.push("/sign-in");
       } else {
         const data = await response.json();
@@ -115,9 +156,7 @@ export function SignUpForm() {
       }
     } catch (error) {
       console.error("Sign up error:", error);
-      form.setError("root", {
-        message: "Failed to create account",
-      });
+      toast.error(error instanceof Error ? error.message : "Failed to create account");
     } finally {
       setIsLoading(false);
     }
@@ -131,7 +170,7 @@ export function SignUpForm() {
       </CardHeader>
       <CardContent>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
@@ -193,10 +232,18 @@ export function SignUpForm() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Department</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <Select 
+                      onValueChange={(value) => {
+                        console.log('Selected department:', value);
+                        field.onChange(value);
+                      }}
+                      value={field.value}
+                    >
                       <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select department" />
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select your department">
+                            {field.value && departments.find(d => d.id === field.value)?.name}
+                          </SelectValue>
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
@@ -207,6 +254,9 @@ export function SignUpForm() {
                         ))}
                       </SelectContent>
                     </Select>
+                    <FormDescription>
+                      Select your department
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -217,18 +267,26 @@ export function SignUpForm() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Role</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <Select 
+                      onValueChange={field.onChange} 
+                      value={field.value}
+                    >
                       <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select role" />
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select your role" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="admin">Admin</SelectItem>
-                        <SelectItem value="manager">Manager</SelectItem>
-                        <SelectItem value="regular">Regular</SelectItem>
+                        {roleOptions.map((role) => (
+                          <SelectItem key={role.value} value={role.value}>
+                            {role.label}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
+                    <FormDescription>
+                      Select your role
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

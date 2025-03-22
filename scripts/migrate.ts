@@ -14,13 +14,38 @@ const sql = postgres(process.env.DATABASE_URL!, {
 async function migrate() {
   try {
     // Read the migration SQL file
-    const migrationPath = path.join(process.cwd(), 'drizzle', '0008_update_activity_logs_user_id.sql');
+    const migrationPath = path.join(process.cwd(), 'drizzle', '0010_add_departments.sql');
     const migrationSql = fs.readFileSync(migrationPath, 'utf-8');
 
-    // Split SQL into individual statements
+    // Split SQL into individual statements, preserving DO blocks
     const statements = migrationSql
-      .split(';')
-      .map(statement => statement.trim())
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .reduce((acc: string[], line) => {
+        const currentStatement = acc[acc.length - 1] || '';
+        
+        // If we're in a DO block or the line starts with '--', append to current statement
+        if (currentStatement.includes('DO $$') || line.trim().startsWith('--')) {
+          acc[acc.length - 1] = (currentStatement + '\n' + line).trim();
+        }
+        // If line ends with semicolon and we're not in a DO block, it's a new statement
+        else if (line.trim().endsWith(';')) {
+          if (currentStatement) {
+            acc[acc.length - 1] = (currentStatement + '\n' + line).trim();
+          } else {
+            acc.push(line.trim());
+          }
+        }
+        // Otherwise append to current statement
+        else {
+          if (currentStatement) {
+            acc[acc.length - 1] = (currentStatement + '\n' + line).trim();
+          } else {
+            acc.push(line.trim());
+          }
+        }
+        return acc;
+      }, [])
       .filter(statement => statement.length > 0);
 
     // Execute each statement

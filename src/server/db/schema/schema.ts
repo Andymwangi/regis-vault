@@ -10,11 +10,13 @@ import {
   varchar,
   foreignKey,
   json,
-  bigint,
-  serial,
-  decimal,
+  pgEnum,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+
+// Define enums
+export const userRoleEnum = pgEnum('user_role', ['admin', 'manager', 'user']);
+export const userStatusEnum = pgEnum('user_status', ['active', 'pending', 'suspended']);
 
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -24,8 +26,8 @@ export const users = pgTable('users', {
   password: varchar('password', { length: 255 }).notNull(),
   avatarUrl: varchar('avatar_url', { length: 255 }),
   departmentId: uuid('department_id').references(() => departments.id),
-  role: varchar('role', { length: 50 }).notNull().default('user'),
-  status: varchar('status', { length: 50 }).notNull().default('active'),
+  role: userRoleEnum('role').notNull().default('user'),
+  status: userStatusEnum('status').notNull().default('pending'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -63,8 +65,8 @@ export const activities = pgTable('activities', {
 });
 
 export const sessions = pgTable('sessions', {
-  id: serial('id').primaryKey(),
-  userId: integer('user_id').references(() => users.id).notNull(),
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => users.id).notNull(),
   token: varchar('token', { length: 255 }).notNull(),
   active: boolean('active').notNull().default(true),
   lastActivity: timestamp('last_activity').defaultNow(),
@@ -83,30 +85,30 @@ export const sharedFiles = pgTable('shared_files', {
 });
 
 export const tags = pgTable('tags', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   name: varchar('name', { length: 100 }).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const fileTags = pgTable('file_tags', {
-  id: serial('id').primaryKey(),
-  fileId: integer('file_id').references(() => files.id).notNull(),
+  id: uuid('id').defaultRandom().primaryKey(),
+  fileId: uuid('file_id').references(() => files.id).notNull(),
   tag: varchar('tag', { length: 100 }).notNull(),
   category: varchar('category', { length: 50 }).notNull().default('other'),
-  confidence: decimal('confidence', { precision: 5, scale: 2 }),
+  confidence: integer('confidence'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 export const ocrResults = pgTable('ocr_results', {
-  id: serial('id').primaryKey(),
-  fileId: integer('file_id').references(() => files.id).notNull(),
+  id: uuid('id').defaultRandom().primaryKey(),
+  fileId: uuid('file_id').references(() => files.id).notNull(),
   text: text('text').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const activityLogs = pgTable('activity_logs', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').references(() => users.id).notNull(),
   action: varchar('action', { length: 255 }).notNull(),
   details: text('details'),
@@ -114,7 +116,7 @@ export const activityLogs = pgTable('activity_logs', {
 });
 
 export const settings = pgTable('settings', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   key: varchar('key', { length: 255 }).notNull().unique(),
   value: json('value').notNull(),
   description: text('description'),
@@ -122,10 +124,10 @@ export const settings = pgTable('settings', {
 });
 
 export const rateLimits = pgTable('rate_limits', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   endpoint: varchar('endpoint', { length: 255 }).notNull(),
   maxRequests: integer('max_requests').notNull(),
-  windowMs: integer('window_ms').notNull(), // Time window in milliseconds
+  windowMs: integer('window_ms').notNull(),
   description: text('description'),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

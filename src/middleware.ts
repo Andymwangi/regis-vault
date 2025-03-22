@@ -9,6 +9,7 @@ const publicRoutes = [
   '/otp-verification',
   '/api/auth',
   '/api/webhook',
+  '/api/departments',
 ];
 
 // Define admin-only routes
