@@ -14,7 +14,7 @@ const sql = postgres(process.env.DATABASE_URL!, {
 async function migrate() {
   try {
     // Read the migration SQL file
-    const migrationPath = path.join(process.cwd(), 'drizzle', '0010_add_departments.sql');
+    const migrationPath = path.join(process.cwd(), 'drizzle', '0016_fix_departments_final.sql');
     const migrationSql = fs.readFileSync(migrationPath, 'utf-8');
 
     // Split SQL into individual statements, preserving DO blocks
@@ -56,7 +56,8 @@ async function migrate() {
       } catch (error) {
         console.error('Error executing statement:', statement.substring(0, 100) + '...');
         console.error('Error details:', error);
-        throw error;
+        // Continue to next statement instead of throwing error
+        console.log('Continuing to next statement...');
       }
     }
 

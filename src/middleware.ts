@@ -37,23 +37,30 @@ export async function middleware(request: NextRequest) {
     if (!token) {
       return NextResponse.redirect(new URL('/sign-in', request.url));
     }
-    return NextResponse.redirect(new URL('/dashboard', request.url));
+    return NextResponse.redirect(new URL('/dashboard/files', request.url));
   }
 
   // Allow public routes
   if (publicRoutes.some(route => pathname.startsWith(route))) {
     // If user is already authenticated and tries to access auth pages, redirect to dashboard
-    if (token && (pathname.startsWith('/sign-in') || pathname.startsWith('/sign-up'))) {
-      return NextResponse.redirect(new URL('/dashboard', request.url));
+    if (token && (pathname === '/sign-in' || pathname === '/sign-up')) {
+      return NextResponse.redirect(new URL('/dashboard/files', request.url));
     }
     return NextResponse.next();
   }
 
-  // Redirect to sign-in if no token (not authenticated)
+  // Check for authentication
   if (!token) {
     const signInUrl = new URL('/sign-in', request.url);
     signInUrl.searchParams.set('callbackUrl', pathname);
     return NextResponse.redirect(signInUrl);
+  }
+
+  // Check for admin routes
+  if (adminRoutes.some(route => pathname.startsWith(route))) {
+    if (token.role !== 'admin') {
+      return NextResponse.redirect(new URL('/dashboard/files', request.url));
+    }
   }
 
   // Check if user is verified for protected routes
@@ -62,13 +69,6 @@ export async function middleware(request: NextRequest) {
       const verificationUrl = new URL('/otp-verification', request.url);
       verificationUrl.searchParams.set('callbackUrl', pathname);
       return NextResponse.redirect(verificationUrl);
-    }
-  }
-
-  // Check admin access for admin routes
-  if (adminRoutes.some(route => pathname.startsWith(route))) {
-    if (token.role !== 'admin') {
-      return NextResponse.redirect(new URL('/dashboard', request.url));
     }
   }
 

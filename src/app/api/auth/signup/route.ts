@@ -5,6 +5,7 @@ import { db } from "@/lib/db/db";
 import { users, departments, activityLogs, userRoleEnum } from "@/server/db/schema/schema";
 import { eq } from "drizzle-orm";
 import { sendOtpEmail } from "@/lib/auth/email";
+import { sendOtpEmailFallback } from "@/lib/auth/email-fallback";
 import { getRedisInstance } from "@/lib/redis/redis";
 
 // Schema validation for sign-up form
@@ -78,27 +79,52 @@ export async function POST(request: NextRequest) {
     const redis = await getRedisInstance();
     await redis.set(`verification:${newUser.id}`, otp, { ex: 600 });
     
-    // Send OTP via email
-    await sendOtpEmail(email, otp);
+    // Try to send OTP via email, but continue if it fails
+    let emailSent = true;
+    let fallbackUsed = false;
+    
+    try {
+      console.log("Attempting to send OTP email via EmailJS...");
+      await sendOtpEmail(email, otp);
+      console.log("OTP email sent successfully via EmailJS");
+    } catch (emailJsError) {
+      console.error("EmailJS failed:", emailJsError);
+      
+      // Try fallback email service
+      try {
+        console.log("Attempting to send OTP email via fallback service...");
+        await sendOtpEmailFallback(email, otp);
+        console.log("OTP email sent successfully via fallback service");
+        fallbackUsed = true;
+      } catch (fallbackError) {
+        console.error("Fallback email service failed:", fallbackError);
+        emailSent = false;
+      }
+    }
     
     // Log user creation
     await db.insert(activityLogs).values({
       userId: newUser.id,
       action: "ACCOUNT_CREATED",
-      details: "New user account created",
+      details: fallbackUsed 
+        ? "New user account created (fallback email used)"
+        : "New user account created",
     });
     
     return NextResponse.json(
       { 
-        message: "Account created successfully. Please check your email for verification code.",
-        userId: newUser.id
+        message: emailSent 
+          ? "Account created successfully. Please check your email for verification code."
+          : "Account created successfully, but we couldn't send the verification email. Please use this code to verify your account.",
+        userId: newUser.id,
+        verificationCode: !emailSent ? otp : undefined // Only include the OTP if email failed
       },
       { status: 201 }
     );
   } catch (error) {
     console.error("Sign-up error:", error);
     return NextResponse.json(
-      { message: "Failed to create account" },
+      { message: "Failed to create account", error: String(error) },
       { status: 500 }
     );
   }

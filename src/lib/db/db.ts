@@ -11,8 +11,8 @@ if (!process.env.DATABASE_URL) {
 const client = postgres(process.env.DATABASE_URL, {
   max: process.env.NODE_ENV === 'production' ? 10 : 1,
   ssl: {
-    rejectUnauthorized: false // Required for Neon database
-  },
+    rejectUnauthorized: false
+  }
 });
 
 // Create the database instance

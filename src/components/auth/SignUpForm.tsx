@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { toast } from "react-hot-toast";
+import { toast } from "sonner";
 
 interface Department {
   id: string;
@@ -102,7 +102,9 @@ export function SignUpForm() {
         setDepartments(data.departments);
       } catch (error) {
         console.error('Error fetching departments:', error);
-        toast.error('Failed to load departments');
+        toast.error("Failed to Load Departments", {
+          description: "Please try refreshing the page",
+        });
       }
     };
 
@@ -148,7 +150,9 @@ export function SignUpForm() {
       });
       
       if (response.ok) {
-        toast.success("Account created successfully. Please check your email for verification.");
+        toast.success("Account Created!", {
+          description: "Your account has been created successfully. Please check your email for verification.",
+        });
         router.push("/sign-in");
       } else {
         const data = await response.json();
@@ -156,16 +160,18 @@ export function SignUpForm() {
       }
     } catch (error) {
       console.error("Sign up error:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to create account");
+      toast.error("Sign Up Failed", {
+        description: error instanceof Error ? error.message : "Please try again",
+      });
     } finally {
       setIsLoading(false);
     }
   }
 
   return (
-    <Card className="w-[500px] mx-auto">
-      <CardHeader>
-        <CardTitle>Create an Account</CardTitle>
+    <Card className="w-[500px] border-red-100">
+      <CardHeader className="space-y-1">
+        <CardTitle className="text-2xl font-bold tracking-tight">Create an Account</CardTitle>
         <CardDescription>Please fill in your information below</CardDescription>
       </CardHeader>
       <CardContent>
@@ -179,7 +185,11 @@ export function SignUpForm() {
                   <FormItem>
                     <FormLabel>First name</FormLabel>
                     <FormControl>
-                      <Input placeholder="John" {...field} />
+                      <Input 
+                        placeholder="John" 
+                        {...field}
+                        className="border-red-100 focus-visible:ring-red-200"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -192,7 +202,11 @@ export function SignUpForm() {
                   <FormItem>
                     <FormLabel>Last name</FormLabel>
                     <FormControl>
-                      <Input placeholder="Doe" {...field} />
+                      <Input 
+                        placeholder="Doe" 
+                        {...field}
+                        className="border-red-100 focus-visible:ring-red-200"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -206,7 +220,11 @@ export function SignUpForm() {
                 <FormItem>
                   <FormLabel>Email address</FormLabel>
                   <FormControl>
-                    <Input placeholder="example@orpp.com" {...field} />
+                    <Input 
+                      placeholder="example@orpp.com" 
+                      {...field}
+                      className="border-red-100 focus-visible:ring-red-200"
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -219,7 +237,11 @@ export function SignUpForm() {
                 <FormItem>
                   <FormLabel>Phone number</FormLabel>
                   <FormControl>
-                    <Input placeholder="+254..." {...field} />
+                    <Input 
+                      placeholder="+254..." 
+                      {...field}
+                      className="border-red-100 focus-visible:ring-red-200"
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -240,10 +262,8 @@ export function SignUpForm() {
                       value={field.value}
                     >
                       <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select your department">
-                            {field.value && departments.find(d => d.id === field.value)?.name}
-                          </SelectValue>
+                        <SelectTrigger className="border-red-100 focus:ring-red-200">
+                          <SelectValue placeholder="Select your department" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
@@ -254,9 +274,6 @@ export function SignUpForm() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <FormDescription>
-                      Select your department
-                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -267,12 +284,9 @@ export function SignUpForm() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Role</FormLabel>
-                    <Select 
-                      onValueChange={field.onChange} 
-                      value={field.value}
-                    >
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
-                        <SelectTrigger className="w-full">
+                        <SelectTrigger className="border-red-100 focus:ring-red-200">
                           <SelectValue placeholder="Select your role" />
                         </SelectTrigger>
                       </FormControl>
@@ -284,9 +298,6 @@ export function SignUpForm() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <FormDescription>
-                      Select your role
-                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -299,7 +310,12 @@ export function SignUpForm() {
                 <FormItem>
                   <FormLabel>Password</FormLabel>
                   <FormControl>
-                    <Input type="password" placeholder="Must be at least 6 characters" {...field} />
+                    <Input 
+                      type="password" 
+                      placeholder="••••••" 
+                      {...field}
+                      className="border-red-100 focus-visible:ring-red-200"
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -310,9 +326,14 @@ export function SignUpForm() {
               name="confirmPassword"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Confirm Password</FormLabel>
+                  <FormLabel>Confirm password</FormLabel>
                   <FormControl>
-                    <Input type="password" placeholder="Confirm your password" {...field} />
+                    <Input 
+                      type="password" 
+                      placeholder="••••••" 
+                      {...field}
+                      className="border-red-100 focus-visible:ring-red-200"
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -327,27 +348,41 @@ export function SignUpForm() {
                     <Checkbox
                       checked={field.value}
                       onCheckedChange={field.onChange}
+                      className="border-red-100 data-[state=checked]:bg-red-500 data-[state=checked]:border-red-500"
                     />
                   </FormControl>
                   <div className="space-y-1 leading-none">
                     <FormLabel>
-                      I agree to the Terms and Privacy Policy
+                      I accept the terms and conditions and privacy policy
                     </FormLabel>
-                    <FormMessage />
                   </div>
                 </FormItem>
               )}
             />
-            <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "Creating account..." : "Create Account"}
+            <Button 
+              type="submit" 
+              className="w-full bg-red-500 hover:bg-red-600" 
+              disabled={isLoading}
+            >
+              {isLoading ? "Creating account..." : "Create account"}
             </Button>
           </form>
         </Form>
       </CardContent>
-      <CardFooter className="flex justify-center">
-        <Button variant="link" onClick={() => router.push("/sign-in")}>
-          Already have an account? Sign in
-        </Button>
+      <CardFooter>
+        <div className="flex flex-col items-center w-full gap-2">
+          <div className="text-sm text-gray-600">
+            Already have an account?{' '}
+            <Button 
+              variant="link" 
+              onClick={() => router.push("/sign-in")} 
+              disabled={isLoading}
+              className="text-red-500 hover:text-red-600 p-0"
+            >
+              Sign in
+            </Button>
+          </div>
+        </div>
       </CardFooter>
     </Card>
   );
