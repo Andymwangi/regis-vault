@@ -382,7 +382,7 @@ export default function FileManagerPage() {
                           </TableCell>
                           <TableCell>
                             <Badge
-                              variant={file.status === 'active' ? 'success' : 'secondary'}
+                              variant={file.status === 'active' ? 'default' : 'secondary'}
                             >
                               {file.status}
                             </Badge>
