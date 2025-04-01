@@ -29,13 +29,18 @@ const nextConfig = {
     serverActions: true,
   },
   // Ignore TypeScript errors during build since we're migrating from Next Auth to Appwrite
+  // Only ignore in production/preview deployments, not in development
   typescript: {
-    // Disable type checking during build, since we've made significant auth changes
-    ignoreBuildErrors: true,
+    // Disable type checking during build for Vercel deployments
+    ignoreBuildErrors: process.env.VERCEL === '1',
   },
   // Ignore ESLint errors during build
   eslint: {
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: process.env.VERCEL === '1',
+  },
+  // Custom env variable to control whether to run the prepare-build script
+  env: {
+    NEXT_BUILD_SKIP_PREPARE: process.env.NEXT_BUILD_SKIP_PREPARE || '',
   },
 }
 
