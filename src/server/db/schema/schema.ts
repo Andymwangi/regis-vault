@@ -20,16 +20,14 @@ export const userStatusEnum = pgEnum('user_status', ['active', 'pending', 'suspe
 
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
-  firstName: varchar('first_name', { length: 255 }).notNull(),
-  lastName: varchar('last_name', { length: 255 }).notNull(),
-  email: varchar('email', { length: 255 }).notNull().unique(),
-  password: varchar('password', { length: 255 }).notNull(),
-  avatarUrl: varchar('avatar_url', { length: 255 }),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  password: text('password').notNull(),
+  role: userRoleEnum('role').default('user').notNull(),
   departmentId: uuid('department_id').references(() => departments.id),
-  role: userRoleEnum('role').notNull().default('user'),
-  status: userStatusEnum('status').notNull().default('pending'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow(),
+  status: text('status').default('active').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
 export const departments = pgTable('departments', {
@@ -102,9 +100,16 @@ export const fileTags = pgTable('file_tags', {
 
 export const ocrResults = pgTable('ocr_results', {
   id: uuid('id').defaultRandom().primaryKey(),
-  fileId: uuid('file_id').references(() => files.id).notNull(),
+  fileId: text('file_id').notNull(),
   text: text('text').notNull(),
+  confidence: integer('confidence').notNull(),
+  language: text('language').notNull(),
+  pageCount: integer('page_count').notNull(),
+  status: text('status').notNull(),
+  error: text('error'),
+  processingTime: integer('processing_time').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 export const activityLogs = pgTable('activity_logs', {

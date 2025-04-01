@@ -1,49 +1,42 @@
-import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
-import { users, activities, departments } from '@/server/db/schema/schema';
-import { desc, eq, and, sql } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
-import { formatDistanceToNow } from 'date-fns';
+'use server';
 
-export async function GET(request: Request) {
+import { NextResponse } from 'next/server';
+import { db } from '@/lib/db';
+import { users, departments, activityLogs } from '@/server/db/schema/schema';
+import { eq, sql } from 'drizzle-orm';
+import { account } from '@/lib/appwrite/config';
+
+export async function GET() {
   try {
-    // Check if user is authenticated and is an admin
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id || session.user.department !== 'Management') {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get users with their latest activity and department info
-    const activeUsers = await db
+    const results = await db
       .select({
         id: users.id,
-        firstName: users.firstName,
-        lastName: users.lastName,
-        avatar: users.avatarUrl,
+        name: users.name,
+        email: users.email,
+        
         department: departments.name,
-        lastActive: sql<Date>`max(${activities.createdAt})`
+        lastActive: sql<string>`MAX(${activityLogs.createdAt})`,
+        status: sql<'active' | 'inactive'>`CASE
+          WHEN MAX(${activityLogs.createdAt}) > NOW() - INTERVAL '5 minutes'
+          THEN 'active'
+          ELSE 'inactive'
+        END`,
       })
       .from(users)
-      .innerJoin(activities, eq(activities.userId, users.id))
-      .innerJoin(departments, eq(users.departmentId, departments.id))
-      .where(eq(users.status, 'active'))
-      .groupBy(users.id, users.firstName, users.lastName, users.avatarUrl, departments.name)
-      .orderBy(desc(sql`max(${activities.createdAt})`))
-      .limit(5)
-      .execute();
+      .leftJoin(activityLogs, eq(activityLogs.userId, users.id))
+      .leftJoin(departments, eq(users.departmentId, departments.id))
+      .groupBy(users.id, users.name, users.email, departments.name)
+      .orderBy(sql`MAX(${activityLogs.createdAt}) DESC NULLS LAST`);
 
-    // Format the users data
-    const formattedUsers = activeUsers.map(user => ({
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      avatar: user.avatar,
-      department: user.department,
-      lastActive: formatDistanceToNow(new Date(user.lastActive), { addSuffix: true })
-    }));
-
-    return NextResponse.json({ activeUsers: formattedUsers });
+    return NextResponse.json({ users: results });
   } catch (error) {
     console.error('Error fetching active users:', error);
     return NextResponse.json(

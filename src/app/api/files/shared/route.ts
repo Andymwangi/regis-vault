@@ -1,14 +1,18 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { files, sharedFiles, users, departments } from '@/server/db/schema/schema';
 import { eq, and, or, like, sql } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -17,14 +21,13 @@ export async function GET(request: Request) {
     const department = searchParams.get('department');
 
     // Build the where clause
-    const whereClause = eq(sharedFiles.sharedWithUserId, sql`${session.user.id}::uuid`);
+    const whereClause = eq(sharedFiles.sharedWithUserId, sql`${user.$id}::uuid`);
 
     // Add search condition if provided
     const searchCondition = search
       ? or(
           like(files.name, `%${search}%`),
-          like(users.firstName, `%${search}%`),
-          like(users.lastName, `%${search}%`)
+          like(users.name, `%${search}%`)
         )
       : undefined;
 
@@ -52,8 +55,7 @@ export async function GET(request: Request) {
         updatedAt: files.updatedAt,
         owner: {
           id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
+          name: users.name,
           email: users.email,
         },
         department: {

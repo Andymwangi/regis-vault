@@ -1,53 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { users, departments } from '@/server/db/schema/schema';
 import { and, eq, like, or } from 'drizzle-orm';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q') || '';
 
-    // Get current user's department
-    const userDepartment = await db.query.departments.findFirst({
-      where: eq(departments.name, session.user.department),
-    });
-
-    if (!userDepartment) {
-      return NextResponse.json(
-        { message: 'Department not found' },
-        { status: 404 }
+    // Build search condition
+    const searchConditions = [];
+    if (query) {
+      searchConditions.push(
+        or(
+          like(users.name, `%${query}%`),
+          like(users.email, `%${query}%`)
+        )
       );
     }
 
     // Search users based on role and department
     const searchResults = await db.query.users.findMany({
       where: and(
-        // Don't include the current user
-        or(
-          like(users.firstName, `%${query}%`),
-          like(users.lastName, `%${query}%`),
-          like(users.email, `%${query}%`)
-        ),
-        session.user.role === 'admin'
-          ? undefined // Admins can see all users
-          : eq(users.departmentId, userDepartment.id.toString()), // Regular users can only see users in their department
+        // Add search conditions
+        searchConditions.length > 0 ? and(...searchConditions) : undefined,
         eq(users.status, 'active')
       ),
       columns: {
         id: true,
-        firstName: true,
-        lastName: true,
+        name: true,
         email: true,
         role: true,
-        avatarUrl: true,
+      
       },
       with: {
         department: {
@@ -59,9 +52,9 @@ export async function GET(request: NextRequest) {
       limit: 10,
     });
 
-    const formattedUsers = searchResults.map(user => ({
+    const formattedUsers = searchResults.map((user: any) => ({
       id: user.id.toString(),
-      name: `${user.firstName} ${user.lastName}`,
+      name: user.name,
       email: user.email,
       role: user.role,
       department: user.department?.name || 'N/A',

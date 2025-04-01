@@ -1,21 +1,25 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { activityLogs, users } from '@/server/db/schema/schema';
 import { eq, and, or, like, sql, gte, lte } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
 import { subDays } from 'date-fns';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const timeRange = searchParams.get('timeRange') || '24h';
-    const user = searchParams.get('user') || 'all';
+    const userId = searchParams.get('user') || 'all';
 
     // Calculate date range based on timeRange parameter
     const now = new Date();
@@ -35,8 +39,8 @@ export async function GET(request: Request) {
     const whereClause = gte(activityLogs.createdAt, startDate);
 
     // Add user filter if provided
-    const userCondition = user !== 'all'
-      ? eq(users.id, user)
+    const userCondition = userId !== 'all'
+      ? eq(users.id, userId)
       : undefined;
 
     // Combine conditions
@@ -50,8 +54,7 @@ export async function GET(request: Request) {
       .select({
         id: activityLogs.id,
         userId: activityLogs.userId,
-        firstName: users.firstName,
-        lastName: users.lastName,
+        name: users.name,
         email: users.email,
         action: activityLogs.action,
         details: activityLogs.details,
@@ -88,8 +91,11 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -101,7 +107,7 @@ export async function DELETE(
         lastActive: sql<string>`MAX(created_at)`,
       })
       .from(activityLogs)
-      .where(eq(activityLogs.id, logId))
+      .where(eq(activityLogs.id, sql`${logId.toString()}::uuid`))
       .groupBy(activityLogs.id)
       .limit(1);
 
@@ -124,7 +130,7 @@ export async function DELETE(
 
     await db
       .delete(activityLogs)
-      .where(eq(activityLogs.id, logId));
+      .where(eq(activityLogs.id, sql`${logId.toString()}::uuid`));
 
     return NextResponse.json({ message: 'Activity log deleted successfully' });
   } catch (error) {

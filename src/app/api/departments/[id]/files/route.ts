@@ -1,17 +1,21 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { departments, files, users } from '@/server/db/schema/schema';
 import { eq, sql } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -28,8 +32,7 @@ export async function GET(
         updatedAt: files.updatedAt,
         owner: {
           id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
+          name: users.name,
           email: users.email,
         },
       })

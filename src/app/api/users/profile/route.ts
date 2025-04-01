@@ -1,20 +1,41 @@
+'use server';
+
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
-import { db } from '@/lib/db/db';
+import { Query } from 'appwrite';
+import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
+import { db } from '@/lib/db';
 import { users } from '@/server/db/schema/schema';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 const updateProfileSchema = z.object({
-  firstName: z.string().min(2),
-  lastName: z.string().min(2),
+  name: z.string().min(2),
 });
 
 export async function PUT(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Get the current user using Appwrite
+    let currentUser;
+    let userProfile;
+    
+    try {
+      currentUser = await account.get();
+      
+      // Get user profile data
+      const userProfiles = await databases.listDocuments(
+        DATABASES.MAIN,
+        COLLECTIONS.DEPARTMENTS,
+        [
+          Query.equal('userId', sanitizeUserId(currentUser.$id))
+        ]
+      );
+      
+      if (userProfiles.documents.length === 0) {
+        return NextResponse.json({ message: 'User profile not found' }, { status: 404 });
+      }
+      
+      userProfile = userProfiles.documents[0];
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -28,17 +49,28 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const { firstName, lastName } = result.data;
+    const { name } = result.data;
 
+    // Update in PostgreSQL
     const [updatedUser] = await db
       .update(users)
       .set({
-        firstName,
-        lastName,
+        name,
         updatedAt: new Date(),
       })
-      .where(eq(users.id, session.user.id))
+      .where(eq(users.id, currentUser.$id))
       .returning();
+      
+    // Also update in Appwrite
+    await databases.updateDocument(
+      DATABASES.MAIN,
+      COLLECTIONS.DEPARTMENTS,
+      userProfile.$id,
+      {
+        name,
+        updatedAt: new Date().toISOString(),
+      }
+    );
 
     return NextResponse.json(updatedUser);
   } catch (error) {

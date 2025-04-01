@@ -1,6 +1,6 @@
 import { Redis } from '@upstash/redis';
 import { rateLimits } from '@/server/db/schema/schema';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 
 const redis = new Redis({

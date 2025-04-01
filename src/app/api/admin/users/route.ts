@@ -1,14 +1,18 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { users, departments } from '@/server/db/schema/schema';
 import { eq, and, or, like } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.role || session.user.role !== 'admin') {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -25,8 +29,7 @@ export async function GET(request: Request) {
     if (search) {
       conditions.push(
         or(
-          like(users.firstName, `%${search}%`),
-          like(users.lastName, `%${search}%`),
+          like(users.name, `%${search}%`),
           like(users.email, `%${search}%`)
         )
       );
@@ -38,7 +41,7 @@ export async function GET(request: Request) {
     }
 
     // Add role filter if provided
-    if (role) {
+    if (role && (role === 'admin' || role === 'manager' || role === 'user')) {
       conditions.push(eq(users.role, role));
     }
 
@@ -51,8 +54,7 @@ export async function GET(request: Request) {
     const results = await db
       .select({
         id: users.id,
-        firstName: users.firstName,
-        lastName: users.lastName,
+        name: users.name,
         email: users.email,
         role: users.role,
         status: users.status,

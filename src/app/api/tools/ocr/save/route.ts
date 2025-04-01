@@ -1,19 +1,32 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { db } from '@/lib/db/db';
-import { files, activities } from '@/server/db/schema/schema';
-import { convertTextToPDF } from '@/lib/utils/pdfUtils';
-import { uploadFile } from '@/lib/services/storageService';
+import { db } from '@/lib/db';
+import { files, activities, ocrResults } from '@/server/db/schema/schema';
+import { account, storage, STORAGE_BUCKETS } from '@/lib/appwrite/config';
+import { eq } from 'drizzle-orm';
+import { Redis } from '@upstash/redis';
+
+// Initialize Redis client
+const getRedisClient = async () => {
+  const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL || '',
+    token: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+  });
+  return redis;
+};
 
 export async function POST(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { text, fileName, confidence } = await request.json();
+    const { text, fileName, confidence, fileId } = await request.json();
 
     if (!text || !fileName) {
       return NextResponse.json(
@@ -22,25 +35,62 @@ export async function POST(request: Request) {
       );
     }
 
-    // Convert the OCR text to a PDF buffer
-    const pdfBuffer = await convertTextToPDF(text);
+    // Create a text file with the OCR content
+    const textBlob = new Blob([text], { type: 'text/plain' });
+    const textFile = new File([textBlob], `${fileName.replace(/\s+/g, '-')}.txt`, { type: 'text/plain' });
 
-    // Generate a unique file name
-    const timestamp = new Date().getTime();
-    const uniqueFileName = `${timestamp}-${fileName.replace(/\s+/g, '-')}`;
+    // Upload the text file to Appwrite storage
+    const textFileUpload = await storage.createFile(
+      STORAGE_BUCKETS.FILES,
+      `ocr-${new Date().getTime()}`,
+      textFile
+    );
 
-    // Save the file to storage and get the URL
-    const fileUrl = await uploadFile(pdfBuffer, uniqueFileName, 'application/pdf');
+    // Get the original OCR result if fileId is provided
+    let originalFileData = null;
+    if (fileId) {
+      try {
+        // Get OCR result from PostgreSQL
+        const [ocrResult] = await db
+          .select()
+          .from(ocrResults)
+          .where(eq(ocrResults.fileId, fileId));
+
+        if (ocrResult) {
+          originalFileData = {
+            id: fileId,
+            text: ocrResult.text,
+            confidence: ocrResult.confidence
+          };
+        }
+
+        // Also update the Redis cache
+        const redis = await getRedisClient();
+        const cacheKey = `ocr:job:${fileId}`;
+        const cachedJob = await redis.get(cacheKey);
+        
+        if (cachedJob) {
+          await redis.set(cacheKey, {
+            ...cachedJob,
+            extractedText: text,
+            savedToFile: textFileUpload.$id,
+            savedAt: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        console.warn('Could not find original file for OCR results:', error);
+      }
+    }
 
     // Start a transaction to save both file and activity
     const result = await db.transaction(async (tx) => {
       // Save file record
       const [file] = await tx.insert(files).values({
         name: fileName,
-        type: 'application/pdf',
-        size: pdfBuffer.length,
-        url: fileUrl,
-        userId: session.user.id,
+        type: 'text/plain',
+        size: text.length,
+        url: storage.getFileView(STORAGE_BUCKETS.FILES, textFileUpload.$id),
+        userId: user.$id.substring(0, 36),
         status: 'active',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -48,13 +98,14 @@ export async function POST(request: Request) {
 
       // Log the activity
       await tx.insert(activities).values({
-        userId: session.user.id,
-        type: 'OCR_PROCESS',
-        description: `Processed document ${fileName} with OCR`,
+        userId: user.$id.substring(0, 36),
+        type: 'OCR_SAVE',
+        description: `Saved OCR text from document ${fileName}`,
         metadata: {
           confidence,
           fileId: file.id,
-          processedAt: new Date().toISOString(),
+          originalFileId: fileId,
+          extractedAt: new Date().toISOString(),
         },
       });
 
@@ -62,7 +113,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({
-      message: 'Document saved successfully',
+      message: 'OCR text saved successfully',
       file: result
     });
   } catch (error) {

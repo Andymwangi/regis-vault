@@ -1,15 +1,33 @@
+'use server';
+
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
-import { db } from '@/lib/db/db';
+import { Query } from 'appwrite';
+import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
+import { db } from '@/lib/db';
 import { files, users } from '@/server/db/schema/schema';
 import { and, eq, desc, like, sql, or, gte } from 'drizzle-orm';
 import { startOfToday, startOfWeek, startOfMonth } from 'date-fns';
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Get the current user using Appwrite
+    let currentUser;
+    try {
+      currentUser = await account.get();
+      
+      // Get user profile data
+      const userProfiles = await databases.listDocuments(
+        DATABASES.MAIN,
+        COLLECTIONS.DEPARTMENTS,
+        [
+          Query.equal('userId', sanitizeUserId(currentUser.$id))
+        ]
+      );
+      
+      if (userProfiles.documents.length === 0) {
+        return NextResponse.json({ message: 'User profile not found' }, { status: 404 });
+      }
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -39,14 +57,14 @@ export async function GET(request: NextRequest) {
       where: and(
         eq(files.status, 'active'),
         or(
-          eq(files.userId, sql`${session.user.id}::uuid`),
+          eq(files.userId, currentUser.$id),
           eq(files.status, 'public'),
           sql`${files.id}::integer IN (
             SELECT "fileId" FROM file_shares 
-            WHERE "userId" = ${session.user.id}::uuid
+            WHERE "userId" = ${currentUser.$id}::uuid
           )`
         ),
-        department ? eq(files.departmentId, sql`${department}::uuid`) : undefined,
+        department ? eq(files.departmentId, department) : undefined,
         search ? like(files.name, `%${search}%`) : undefined,
         timeFilter
       ),
@@ -56,9 +74,7 @@ export async function GET(request: NextRequest) {
         user: {
           columns: {
             id: true,
-            firstName: true,
-            lastName: true,
-            avatarUrl: true,
+            name: true,  // Using name instead of firstName/lastName
           },
         },
         department: {
@@ -69,7 +85,7 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    const formattedFiles = recentFiles.map(file => ({
+    const formattedFiles = recentFiles.map((file: any) => ({
       id: file.id.toString(),
       name: file.name,
       type: file.type,
@@ -79,7 +95,7 @@ export async function GET(request: NextRequest) {
       status: file.status || 'active',
       owner: file.user ? {
         id: file.user.id.toString(),
-        name: `${file.user.firstName} ${file.user.lastName}`,
+        name: file.user.name,  // Using name field directly
         avatar: file.user.avatarUrl,
       } : null,
       department: file.department?.name || 'Unknown',

@@ -1,20 +1,23 @@
+'use server';
+
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { isRateLimited } from '@/lib/redis/rate-limit';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account } from '@/lib/appwrite/config';
 
 export async function rateLimitMiddleware(
   request: NextRequest,
   endpoint: string
 ) {
-  // Get the user's session
-  const session = await getServerSession(authOptions);
-  
-  // Use IP address as identifier if no session
-  const identifier = session?.user?.id || 
-    request.headers.get('x-forwarded-for')?.split(',')[0] || 
-    'anonymous';
+  // Try to get the user from Appwrite
+  let identifier;
+  try {
+    const currentUser = await account.get();
+    identifier = currentUser.$id;
+  } catch (error) {
+    // Use IP address as identifier if no user is authenticated
+    identifier = request.headers.get('x-forwarded-for')?.split(',')[0] || 'anonymous';
+  }
   
   try {
     const { limited, remaining } = await isRateLimited(endpoint, identifier);

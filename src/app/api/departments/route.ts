@@ -1,109 +1,227 @@
-import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
-import { departments } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
+import { NextRequest, NextResponse } from "next/server";
+import { account } from "@/lib/appwrite/config";
+import { databases, DATABASES, COLLECTIONS, ID } from "@/lib/appwrite/config";
+import { db } from "@/lib/db";
+import { departments } from "@/server/db/schema/schema";
+import { eq } from "drizzle-orm";
+import { getDepartmentStats } from "@/lib/appwrite/department-files";
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
-
-const headers = {
-  'Content-Type': 'application/json',
-  'Cache-Control': 'no-cache, no-store, must-revalidate',
-};
-
-export async function GET() {
-  console.log('Departments API called');
-
+// GET all departments
+export async function GET(request: NextRequest) {
   try {
-    // Test database connection first
+    // Check if user is authenticated with Appwrite
     try {
-      await db.query.departments.findFirst({
-        columns: {
-          id: true,
-          name: true,
-          description: true,
-          allocatedStorage: true,
-        }
-      });
-      console.log('Database connection successful');
-    } catch (dbError) {
-      console.error('Database connection failed:', dbError);
-      throw new Error('Database connection failed');
+      await account.get();
+    } catch (error) {
+      return NextResponse.json(
+        { message: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
-    // Fetch all departments
-    const results = await db.query.departments.findMany({
-      columns: {
-        id: true,
-        name: true,
-        description: true,
-        allocatedStorage: true,
-      },
-      orderBy: (departments, { asc }) => [asc(departments.name)],
+    // Get departments from PostgreSQL for detailed information
+    const pgDepartments = await db.query.departments.findMany({
+      orderBy: (dept, { asc }) => [asc(dept.name)],
     });
 
-    console.log('API: Fetched departments:', JSON.stringify(results, null, 2));
-
-    if (!results || results.length === 0) {
-      console.log('No departments found in database');
-      // Insert default departments if none exist
-      const defaultDepartments = [
-        { name: 'Finance', description: 'Financial management and accounting', allocatedStorage: 0 },
-        { name: 'HR', description: 'Human Resources management', allocatedStorage: 0 },
-        { name: 'Legal and Compliance', description: 'Legal affairs and regulatory compliance', allocatedStorage: 0 },
-        { name: 'IT', description: 'Information Technology and systems', allocatedStorage: 0 },
-        { name: 'Records Management', description: 'Document and records management', allocatedStorage: 0 },
-      ];
-
-      for (const dept of defaultDepartments) {
-        const existing = await db.query.departments.findFirst({
-          where: eq(departments.name, dept.name),
-        });
-
-        if (!existing) {
-          await db.insert(departments).values(dept);
-          console.log(`Added department: ${dept.name}`);
+    // Enhance each department with usage statistics from Appwrite
+    const enhancedDepartments = await Promise.all(
+      pgDepartments.map(async (department) => {
+        try {
+          // Get usage stats from Appwrite
+          const stats = await getDepartmentStats(department.id);
+          
+          return {
+            ...department,
+            stats,
+          };
+        } catch (error) {
+          console.error(`Error getting stats for department ${department.id}:`, error);
+          
+          // Return department without stats if there's an error
+          return {
+            ...department,
+            stats: {
+              totalFiles: 0,
+              totalUsers: 0,
+              totalStorageBytes: 0,
+              totalStorageMB: 0,
+              fileTypeCount: {},
+            },
+          };
         }
+      })
+    );
+
+    return NextResponse.json(enhancedDepartments);
+  } catch (error) {
+    console.error("Error fetching departments:", error);
+    return NextResponse.json(
+      { message: "Failed to fetch departments" },
+      { status: 500 }
+    );
+  }
+}
+
+// POST to create a new department
+export async function POST(request: NextRequest) {
+  try {
+    // Check if user is authenticated and is an admin
+    try {
+      const userAccount = await account.get();
+      
+      // Get user profile to check role
+      const usersResult = await databases.listDocuments(
+        DATABASES.MAIN,
+        COLLECTIONS.DEPARTMENTS,
+        []
+      );
+      
+      const user = usersResult.documents.find(u => u.userId === userAccount.$id);
+      
+      if (!user || user.role !== 'admin') {
+        return NextResponse.json(
+          { message: "Unauthorized - Admin access required" },
+          { status: 403 }
+        );
       }
+    } catch (error) {
+      return NextResponse.json(
+        { message: "Unauthorized" },
+        { status: 401 }
+      );
+    }
 
-      // Fetch departments again after inserting defaults
-      const updatedResults = await db.query.departments.findMany({
-        columns: {
-          id: true,
-          name: true,
-          description: true,
-          allocatedStorage: true,
-        },
-        orderBy: (departments, { asc }) => [asc(departments.name)],
-      });
+    const data = await request.json();
+    
+    // Validate required fields
+    if (!data.name) {
+      return NextResponse.json(
+        { message: "Department name is required" },
+        { status: 400 }
+      );
+    }
 
-      return new NextResponse(
-        JSON.stringify({ departments: updatedResults || [] }),
+    // Create department in PostgreSQL
+    const [newDepartment] = await db.insert(departments).values({
+      name: data.name,
+      description: data.description || '',
+      allocatedStorage: data.allocatedStorage || 0,
+    }).returning();
+
+    // Create department in Appwrite for easier querying
+    await databases.createDocument(
+      DATABASES.MAIN,
+      COLLECTIONS.DEPARTMENTS,
+      ID.unique(),
+      {
+        departmentId: newDepartment.id,
+        name: newDepartment.name,
+        description: newDepartment.description || '',
+        allocatedStorage: newDepartment.allocatedStorage || 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+    );
+
+    return NextResponse.json({
+      message: "Department created successfully",
+      department: newDepartment,
+    });
+  } catch (error) {
+    console.error("Error creating department:", error);
+    return NextResponse.json(
+      { message: "Failed to create department" },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT to update a department
+export async function PUT(request: NextRequest) {
+  try {
+    // Check if user is authenticated and is an admin
+    try {
+      const userAccount = await account.get();
+      
+      // Get user profile to check role
+      const usersResult = await databases.listDocuments(
+        DATABASES.MAIN,
+        COLLECTIONS.DEPARTMENTS,
+        []
+      );
+      
+      const user = usersResult.documents.find(u => u.userId === userAccount.$id);
+      
+      if (!user || user.role !== 'admin') {
+        return NextResponse.json(
+          { message: "Unauthorized - Admin access required" },
+          { status: 403 }
+        );
+      }
+    } catch (error) {
+      return NextResponse.json(
+        { message: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const data = await request.json();
+    
+    // Validate required fields
+    if (!data.id || !data.name) {
+      return NextResponse.json(
+        { message: "Department ID and name are required" },
+        { status: 400 }
+      );
+    }
+
+    // Update department in PostgreSQL
+    const [updatedDepartment] = await db.update(departments)
+      .set({
+        name: data.name,
+        description: data.description,
+        allocatedStorage: data.allocatedStorage,
+        updatedAt: new Date(),
+      })
+      .where(eq(departments.id, data.id))
+      .returning();
+
+    // Find and update department in Appwrite
+    // First need to find the Appwrite document ID
+    const appwriteDepartments = await databases.listDocuments(
+      DATABASES.MAIN,
+      COLLECTIONS.DEPARTMENTS,
+      []
+    );
+    
+    const appwriteDept = appwriteDepartments.documents.find(
+      d => d.departmentId === data.id
+    );
+    
+    if (appwriteDept) {
+      await databases.updateDocument(
+        DATABASES.MAIN,
+        COLLECTIONS.DEPARTMENTS,
+        appwriteDept.$id,
         {
-          status: 200,
-          headers,
+          name: data.name,
+          description: data.description || '',
+          allocatedStorage: data.allocatedStorage || 0,
+          updatedAt: new Date().toISOString(),
         }
       );
     }
 
-    return new NextResponse(
-      JSON.stringify({ departments: results || [] }),
-      {
-        status: 200,
-        headers,
-      }
-    );
+    return NextResponse.json({
+      message: "Department updated successfully",
+      department: updatedDepartment,
+    });
   } catch (error) {
-    console.error('API Error:', error);
-    return new NextResponse(
-      JSON.stringify({
-        error: 'Failed to fetch departments',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      }),
-      {
-        status: 500,
-        headers,
-      }
+    console.error("Error updating department:", error);
+    return NextResponse.json(
+      { message: "Failed to update department" },
+      { status: 500 }
     );
   }
 } 

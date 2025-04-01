@@ -4,9 +4,11 @@ import { getToken } from 'next-auth/jwt';
 
 // Define public routes that don't require authentication
 const publicRoutes = [
+  '/',
   '/sign-in',
   '/sign-up',
-  '/otp-verification',
+  '/sign-out',
+  '/(auth)',  // Include all paths under the auth group
   '/api/auth',
   '/api/webhook',
   '/api/departments',
@@ -17,35 +19,45 @@ const adminRoutes = [
   '/dashboard/admin',
   '/dashboard/settings',
   '/dashboard/users',
+  '/api/admin',
 ];
 
-// Define routes that require email verification
-const requireVerificationRoutes = [
-  '/dashboard/files',
-  '/dashboard/shared',
-  '/dashboard/recent',
+// Define manager-only routes
+const managerRoutes = [
   '/dashboard/teams',
-  '/dashboard/trash',
+  '/dashboard/reports',
 ];
 
 export async function middleware(request: NextRequest) {
   const token = await getToken({ req: request });
-  const { pathname } = request.nextUrl;
+  const url = request.nextUrl.clone();
+  const { pathname } = url;
 
-  // Handle root path - redirect to sign-in if not authenticated, dashboard if authenticated
+  // Root path is handled by the welcome page itself
   if (pathname === '/') {
-    if (!token) {
-      return NextResponse.redirect(new URL('/sign-in', request.url));
+    return NextResponse.next();
+  }
+
+  // Allow sign-in and sign-up even for authenticated users
+  if (pathname === '/sign-in' || pathname === '/sign-up') {
+    // If user is already authenticated and tries to access auth pages, redirect to dashboard
+    if (token) {
+      if (token.role === 'admin') {
+        return NextResponse.redirect(new URL('/dashboard/admin/settings', request.url));
+      }
+      return NextResponse.redirect(new URL('/dashboard/files', request.url));
     }
+    return NextResponse.next();
+  }
+
+  // Check for OTP verification paths and redirect to dashboard
+  if (pathname.startsWith('/otp-verification')) {
+    console.log('Intercepting OTP verification in middleware - redirecting to dashboard');
     return NextResponse.redirect(new URL('/dashboard/files', request.url));
   }
 
   // Allow public routes
   if (publicRoutes.some(route => pathname.startsWith(route))) {
-    // If user is already authenticated and tries to access auth pages, redirect to dashboard
-    if (token && (pathname === '/sign-in' || pathname === '/sign-up')) {
-      return NextResponse.redirect(new URL('/dashboard/files', request.url));
-    }
     return NextResponse.next();
   }
 
@@ -63,12 +75,10 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // Check if user is verified for protected routes
-  if (requireVerificationRoutes.some(route => pathname.startsWith(route))) {
-    if (!token.emailVerified) {
-      const verificationUrl = new URL('/otp-verification', request.url);
-      verificationUrl.searchParams.set('callbackUrl', pathname);
-      return NextResponse.redirect(verificationUrl);
+  // Check for manager routes
+  if (managerRoutes.some(route => pathname.startsWith(route))) {
+    if (token.role !== 'admin' && token.role !== 'manager') {
+      return NextResponse.redirect(new URL('/dashboard/files', request.url));
     }
   }
 

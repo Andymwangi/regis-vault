@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button';
 import { Upload, X, FileIcon } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
+import { uploadFile, account, storage, STORAGE_BUCKETS } from '@/lib/appwrite/config';
 
 interface UploadResponse {
-  successfulUploads: File[];
+  successfulUploads: any[];
   failedUploads: File[];
 }
 
@@ -15,12 +16,16 @@ interface FileUploadProps {
   onUploadComplete: (fileData: UploadResponse) => void;
   acceptedFileTypes?: string;
   maxSizeMB?: number;
+  userId?: string;
+  departmentId?: string;
 }
 
 export const FileUpload: FC<FileUploadProps> = ({ 
   onUploadComplete, 
   acceptedFileTypes = "*",
-  maxSizeMB = 50
+  maxSizeMB = 50,
+  userId,
+  departmentId
 }) => {
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -54,46 +59,78 @@ export const FileUpload: FC<FileUploadProps> = ({
   const uploadFiles = async () => {
     if (files.length === 0) return;
     
+    // If userId or departmentId are not provided, get the current user session
+    let currentUserId = userId;
+    let currentDepartmentId = departmentId;
+    
+    if (!currentUserId) {
+      try {
+        // Get current session
+        const session = await account.get();
+        currentUserId = session.$id;
+        
+        // If still no departmentId, we need to fetch it
+        if (!currentDepartmentId) {
+          // This is a simplified approach - in a real app you'd fetch from your database
+          currentDepartmentId = session.department || "default";
+        }
+      } catch (error) {
+        toast.error("Authentication required", {
+          description: "Please sign in to upload files",
+        });
+        return;
+      }
+    }
+    
     setUploading(true);
     setProgress(0);
     
-    try {
-      const formData = new FormData();
-      files.forEach(file => {
-        formData.append('files', file);
-      });
-      
-      const response = await fetch('/api/files/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        throw new Error('Upload failed');
+    const successfulUploads: any[] = [];
+    const failedUploads: File[] = [];
+    
+    // Process files sequentially with progress tracking
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        // Upload file using Appwrite SDK
+        const uploadResult = await uploadFile(
+          file,
+          currentUserId!,
+          currentDepartmentId!
+        );
+        
+        successfulUploads.push(uploadResult);
+        
+        // Update progress
+        const currentProgress = Math.round(((i + 1) / files.length) * 100);
+        setProgress(currentProgress);
+      } catch (error) {
+        console.error(`Failed to upload ${file.name}:`, error);
+        failedUploads.push(file);
       }
-      
-      const data = await response.json() as UploadResponse;
-      
-      if (data.failedUploads?.length > 0) {
-        toast.error("Some files failed to upload", {
-          description: `${data.failedUploads.length} file(s) failed to upload`,
-        });
-      } else {
-        toast.success("Upload complete", {
-          description: `Successfully uploaded ${data.successfulUploads.length} file(s)`,
-        });
-      }
-      
-      onUploadComplete(data);
-      setFiles([]);
-    } catch (error) {
-      console.error('Upload error:', error);
-      toast.error("Upload failed", {
-        description: "There was an error uploading your files",
-      });
-    } finally {
-      setUploading(false);
     }
+    
+    setUploading(false);
+    
+    // Report results
+    if (failedUploads.length > 0) {
+      toast.error("Some files failed to upload", {
+        description: `${failedUploads.length} file(s) failed to upload`,
+      });
+    } else {
+      toast.success("Upload complete", {
+        description: `Successfully uploaded ${successfulUploads.length} file(s)`,
+      });
+    }
+    
+    // Call the callback with results
+    onUploadComplete({
+      successfulUploads,
+      failedUploads
+    });
+    
+    // Clear the file list
+    setFiles([]);
   };
   
   return (

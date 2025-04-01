@@ -1,10 +1,15 @@
-import { db } from '@/lib/db/db';
-import { files, users, departments, activityLogs, ocrResults } from '@/server/db/schema/schema';
-import { eq, and, desc, asc, like, sql } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { db } from '@/lib/db';
+import { 
+  files, 
+  departments, 
+  activityLogs,
+  ocrResults,
+  users
+} from '@/server/db/schema/schema';
+import { eq, sql, desc, asc, and, like, or } from 'drizzle-orm';
 import { createWorker } from 'tesseract.js';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { account } from '@/lib/appwrite/config';
 
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs/promises';
@@ -59,8 +64,7 @@ export class FileService {
       updatedAt: files.updatedAt,
       uploadedBy: {
         id: users.id,
-        firstName: users.firstName,
-        lastName: users.lastName,
+        name: users.name,
         email: users.email,
       },
       department: {
@@ -83,7 +87,7 @@ export class FileService {
     return {
       files: results.map(file => ({
         ...file,
-        uploadedBy: file.uploadedBy ? `${file.uploadedBy.firstName} ${file.uploadedBy.lastName}` : 'Unknown',
+        uploadedBy: file.uploadedBy ? file.uploadedBy.name : 'Unknown',
         department: file.department?.name || 'N/A'
       })),
       pagination: {
@@ -95,54 +99,60 @@ export class FileService {
   }
 
   static async deleteFiles(fileIds: string[]) {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || session.user.role !== 'admin') {
-      throw new Error('Unauthorized');
-    }
+    try {
+      // Check if user is authenticated with Appwrite
+      const user = await account.get();
+      
+      // Start a transaction
+      return await db.transaction(async (tx) => {
+        // Update files status to deleted
+        await tx.update(files)
+          .set({ status: 'deleted', updatedAt: new Date() })
+          .where(sql`id = ANY(${fileIds}::uuid[])`);
 
-    // Start a transaction
-    return await db.transaction(async (tx) => {
-      // Update files status to deleted
-      await tx.update(files)
-        .set({ status: 'deleted', updatedAt: new Date() })
-        .where(sql`id = ANY(${fileIds}::uuid[])`);
+        // Log the activity
+        await tx.insert(activityLogs).values({
+          userId: user.$id.substring(0, 36),
+          action: 'DELETE_FILES',
+          details: `Deleted files: ${fileIds.join(', ')}`
+        });
 
-      // Log the activity
-      await tx.insert(activityLogs).values({
-        userId: sql`${session.user.id}::uuid`,
-        action: 'DELETE_FILES',
-        details: `Deleted files: ${fileIds.join(', ')}`
+        return { success: true };
       });
-
-      return { success: true };
-    });
+    } catch (error) {
+      console.error('Error deleting files:', error);
+      throw error;
+    }
   }
 
   static async updateFileAccess(fileId: string, status: string) {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || session.user.role !== 'admin') {
-      throw new Error('Unauthorized');
-    }
+    try {
+      // Check if user is authenticated with Appwrite
+      const user = await account.get();
 
-    return await db.transaction(async (tx) => {
-      // Update file status
-      const [updatedFile] = await tx.update(files)
-        .set({ 
-          status,
-          updatedAt: new Date()
-        })
-        .where(eq(files.id, sql`${fileId}::uuid`))
-        .returning();
+      return await db.transaction(async (tx) => {
+        // Update file status
+        const [updatedFile] = await tx.update(files)
+          .set({ 
+            status,
+            updatedAt: new Date()
+          })
+          .where(eq(files.id, sql`${fileId}::uuid`))
+          .returning();
 
-      // Log the activity
-      await tx.insert(activityLogs).values({
-        userId: sql`${session.user.id}::uuid`,
-        action: 'UPDATE_FILE_ACCESS',
-        details: `Updated file ${fileId} status to ${status}`
+        // Log the activity
+        await tx.insert(activityLogs).values({
+          userId: user.$id.substring(0, 36),
+          action: 'UPDATE_FILE_ACCESS',
+          details: `Updated file ${fileId} status to ${status}`
+        });
+
+        return updatedFile;
       });
-
-      return updatedFile;
-    });
+    } catch (error) {
+      console.error('Error updating file access:', error);
+      throw error;
+    }
   }
 
   static async getFileStats() {
@@ -252,6 +262,13 @@ export class FileService {
         await db.insert(ocrResults).values({
           fileId: sql`${file.id}::uuid`,
           text: extractedText,
+          status: 'completed',
+          confidence: 0,
+          language: 'en',
+          pageCount: 1,
+          processingTime: 0,
+          createdAt: new Date(),
+          updatedAt: new Date()
         });
       }
       

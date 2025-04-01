@@ -15,8 +15,34 @@ import {
 import { ShareDialog } from '@/components/dashboard/share-dialog/ShareDialog';
 import { Search, SlidersHorizontal, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { File } from '@/types/file';
+import { File, Department } from '@/types/file';
 import { useAuth } from '@/hooks/use-auth';
+
+// Define the interface matching what FileTable expects
+interface FileData {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  createdAt: string;
+  updatedAt: string;
+  owner: {
+    id: string;
+    name: string;
+    email: string;
+    firstName?: string;
+    lastName?: string;
+  };
+  department?: {
+    id: string;
+    name: string;
+  };
+  deletedBy?: {
+    id: string;
+    firstName?: string;
+    lastName?: string;
+  };
+}
 
 export default function SharedDashboardPage() {
   const { user } = useAuth();
@@ -25,7 +51,7 @@ export default function SharedDashboardPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [departments, setDepartments] = useState<string[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
   const [permissionFilter, setPermissionFilter] = useState<string>('all');
 
@@ -114,6 +140,34 @@ export default function SharedDashboardPage() {
     }
   };
 
+  // Function to convert File[] to FileData[]
+  const mapFilesToFileData = (files: File[]): FileData[] => {
+    return files.map(file => ({
+      id: file.id,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      createdAt: file.createdAt,
+      updatedAt: file.updatedAt,
+      owner: {
+        id: file.userId,
+        name: file.owner ? `${file.owner.firstName} ${file.owner.lastName}` : 'Unknown',
+        email: '',
+        firstName: file.owner?.firstName,
+        lastName: file.owner?.lastName
+      },
+      department: file.department ? {
+        id: file.departmentId || '',
+        name: file.department.name
+      } : undefined,
+      deletedBy: file.deletedBy ? {
+        id: '',
+        firstName: file.deletedBy.firstName,
+        lastName: file.deletedBy.lastName
+      } : undefined
+    }));
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -141,7 +195,7 @@ export default function SharedDashboardPage() {
               <SelectContent>
                 <SelectItem value="all">All Departments</SelectItem>
                 {departments.map(dept => (
-                  <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+                  <SelectItem key={dept.id} value={dept.id}>{dept.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -166,7 +220,7 @@ export default function SharedDashboardPage() {
 
         <div className="bg-white rounded-lg shadow">
           <FileTable
-            files={files}
+            files={mapFilesToFileData(files)}
             showOwner={true}
             showDepartment={true}
             onShare={handleShare}

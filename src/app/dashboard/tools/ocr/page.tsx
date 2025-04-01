@@ -2,7 +2,6 @@
 
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { createWorker } from 'tesseract.js';
 import { DashboardLayout } from '@/components/common/layout/DashboardLayout';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,11 +16,14 @@ import { Slider } from '@/components/ui/slider';
 import { Loader2, Upload, FileText, Settings, Save } from 'lucide-react';
 import { ocrConfig } from '@/lib/config/ocr';
 import { toast } from 'sonner';
+import { uploadFile } from '@/lib/appwrite/config';
 
 interface OCRResult {
   text: string;
   confidence: number;
   documentName: string;
+  pageCount: number;
+  processingTime: number;
 }
 
 export default function OCRPage() {
@@ -32,6 +34,8 @@ export default function OCRPage() {
   const [documentType, setDocumentType] = useState('general');
   const [quality, setQuality] = useState(75);
   const [ocrResult, setOcrResult] = useState<OCRResult | null>(null);
+  const [fileId, setFileId] = useState<string | null>(null);
+  const [checkStatusInterval, setCheckStatusInterval] = useState<NodeJS.Timeout | null>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -43,8 +47,15 @@ export default function OCRPage() {
       };
       reader.readAsDataURL(file);
       setOcrResult(null);
+      setFileId(null);
+
+      // Clear any existing interval
+      if (checkStatusInterval) {
+        clearInterval(checkStatusInterval);
+        setCheckStatusInterval(null);
+      }
     }
-  }, []);
+  }, [checkStatusInterval]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -60,24 +71,67 @@ export default function OCRPage() {
 
     try {
       setProcessing(true);
-      toast.info('Starting OCR processing...');
+      toast.info('Uploading document for OCR processing...');
       
-      const worker = await createWorker(language);
-      const { data: { text, confidence } } = await worker.recognize(file);
+      // Upload the file to Appwrite
+      const { fileId: newFileId } = await uploadFile(file);
+      setFileId(newFileId);
       
-      setOcrResult({
-        text,
-        confidence,
-        documentName: file.name,
-      });
-
-      await worker.terminate();
-      toast.success('OCR processing completed');
+      toast.success('Document uploaded successfully');
+      toast.info('OCR processing started in the background');
+      
+      // Set up interval to check OCR status every 3 seconds
+      const interval = setInterval(async () => {
+        try {
+          const response = await fetch(`/api/ocr/status?fileId=${newFileId}`);
+          if (!response.ok) {
+            throw new Error('Failed to get OCR status');
+          }
+          
+          const statusData = await response.json();
+          
+          if (statusData.status === 'completed') {
+            // OCR completed, get the results
+            clearInterval(interval);
+            setCheckStatusInterval(null);
+            
+            const resultResponse = await fetch(`/api/ocr/result?fileId=${newFileId}`);
+            if (!resultResponse.ok) {
+              throw new Error('Failed to get OCR results');
+            }
+            
+            const resultData = await resultResponse.json();
+            
+            setOcrResult({
+              text: resultData.text,
+              confidence: resultData.confidence,
+              documentName: file.name,
+              pageCount: resultData.pageCount,
+              processingTime: resultData.processingTime
+            });
+            
+            setProcessing(false);
+            toast.success('OCR processing completed');
+          } else if (statusData.status === 'failed') {
+            // OCR failed
+            clearInterval(interval);
+            setCheckStatusInterval(null);
+            setProcessing(false);
+            toast.error(`OCR processing failed: ${statusData.error || 'Unknown error'}`);
+          }
+          // If status is 'processing', continue waiting
+          
+        } catch (error) {
+          console.error('Error checking OCR status:', error);
+        }
+      }, 3000);
+      
+      setCheckStatusInterval(interval);
+      
     } catch (error) {
-      console.error('OCR processing error:', error);
-      toast.error('Failed to process document');
-    } finally {
+      console.error('Error uploading document:', error);
       setProcessing(false);
+      toast.error('Failed to process document');
     }
   };
 
@@ -95,6 +149,7 @@ export default function OCRPage() {
           text: ocrResult.text,
           fileName: ocrResult.documentName,
           confidence: ocrResult.confidence,
+          fileId: fileId
         }),
       });
 
@@ -247,9 +302,11 @@ export default function OCRPage() {
                 Confidence: {Math.round(ocrResult.confidence)}%
               </p>
             </div>
-            <p className="text-sm text-gray-500 mb-4">
-              Document: {ocrResult.documentName}
-            </p>
+            <div className="flex flex-wrap gap-2 text-sm text-gray-500 mb-4">
+              <p>Document: {ocrResult.documentName}</p>
+              <p>• Pages: {ocrResult.pageCount}</p>
+              <p>• Processing time: {(ocrResult.processingTime / 1000).toFixed(2)}s</p>
+            </div>
             <div className="grid grid-cols-2 gap-6">
               <div className="border rounded-lg p-4">
                 <h3 className="font-medium mb-2">Document Preview</h3>

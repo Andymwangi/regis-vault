@@ -1,14 +1,23 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { db } from '@/lib/db/db';
-import { files, users, departments as deptTable, activityLogs } from '@/server/db/schema/schema';
-import { eq, and, desc, asc, like, sql } from 'drizzle-orm';
+import { db } from '@/lib/db';
+import { 
+  files as filesTable, 
+  departments as deptTable,
+  activityLogs,
+  users
+} from '@/server/db/schema/schema';
+import { account } from '@/lib/appwrite/config';
+import { eq, and, sql, asc, desc, like } from 'drizzle-orm';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || session.user.role !== 'admin') {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -23,41 +32,40 @@ export async function GET(request: Request) {
     
     // Add department filter
     if (department && department !== 'all') {
-      where.push(eq(files.departmentId, department));
+      where.push(eq(filesTable.departmentId, department));
     }
 
     // Add type filter
     if (type && type !== 'all') {
-      where.push(like(files.type, type === 'document' ? 'application/%' : `${type}/%`));
+      where.push(like(filesTable.type, type === 'document' ? 'application/%' : `${type}/%`));
     }
 
     // Add status filter - only show active files by default
-    where.push(eq(files.status, 'active'));
+    where.push(eq(filesTable.status, 'active'));
 
     // Calculate offset for pagination
     const offset = (page - 1) * limit;
 
     // Determine sort field and direction
-    const orderBy = sort === 'name' ? files.name : 
-                   sort === 'size' ? files.size :
-                   files.createdAt; // default to date
+    const orderBy = sort === 'name' ? filesTable.name : 
+                   sort === 'size' ? filesTable.size :
+                   filesTable.createdAt; // default to date
 
     // Fetch files with joins
     const filesList = await db
       .select({
-        id: files.id,
-        name: files.name,
-        type: files.type,
-        size: files.size,
-        url: files.url,
-        thumbnailUrl: files.thumbnailUrl,
-        status: files.status,
-        createdAt: files.createdAt,
-        updatedAt: files.updatedAt,
+        id: filesTable.id,
+        name: filesTable.name,
+        type: filesTable.type,
+        size: filesTable.size,
+        url: filesTable.url,
+        thumbnailUrl: filesTable.thumbnailUrl,
+        status: filesTable.status,
+        createdAt: filesTable.createdAt,
+        updatedAt: filesTable.updatedAt,
         uploadedBy: {
           id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
+          name: users.name,
           email: users.email
         },
         department: {
@@ -65,9 +73,9 @@ export async function GET(request: Request) {
           name: deptTable.name
         }
       })
-      .from(files)
-      .leftJoin(users, eq(files.userId, users.id))
-      .leftJoin(deptTable, eq(files.departmentId, deptTable.id))
+      .from(filesTable)
+      .leftJoin(users, eq(filesTable.userId, users.id))
+      .leftJoin(deptTable, eq(filesTable.departmentId, deptTable.id))
       .where(and(...where))
       .orderBy(desc(orderBy))
       .limit(limit)
@@ -76,13 +84,13 @@ export async function GET(request: Request) {
     // Get total count for pagination
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
-      .from(files)
+      .from(filesTable)
       .where(and(...where));
 
     // Format response
     const formattedFiles = filesList.map(file => ({
       ...file,
-      uploadedBy: file.uploadedBy ? `${file.uploadedBy.firstName} ${file.uploadedBy.lastName}` : 'Unknown',
+      uploadedBy: file.uploadedBy ? file.uploadedBy.name : 'Unknown',
       department: file.department?.name || 'N/A'
     }));
 
@@ -127,39 +135,42 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || session.user.role !== 'admin') {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { fileIds } = await request.json();
     if (!Array.isArray(fileIds) || fileIds.length === 0) {
       return NextResponse.json(
-        { error: 'Invalid request: fileIds must be a non-empty array' },
+        { error: 'Invalid request: fileIds array is required' },
         { status: 400 }
       );
     }
 
-    // Start a transaction
-    const result = await db.transaction(async (tx) => {
-      // Verify files exist and get their details
-      const filesToDelete = await tx
+    // First get files to delete for response
+    const filesToDelete = await db.transaction(async (tx) => {
+      // Verify files exist
+      const existingFiles = await tx
         .select({
-          id: files.id,
-          userId: files.userId,
-          departmentId: files.departmentId,
-          url: files.url
+          id: filesTable.id,
+          name: filesTable.name
         })
-        .from(files)
+        .from(filesTable)
         .where(sql`id = ANY(${fileIds})`);
 
-      if (filesToDelete.length !== fileIds.length) {
-        throw new Error('One or more files not found');
+      if (existingFiles.length !== fileIds.length) {
+        const foundIds = existingFiles.map(f => f.id);
+        const missingIds = fileIds.filter(id => !foundIds.includes(id));
+        throw new Error(`Some files were not found: ${missingIds.join(', ')}`);
       }
 
       // Update files status to deleted
       await tx
-        .update(files)
+        .update(filesTable)
         .set({ 
           status: 'deleted',
           updatedAt: new Date()
@@ -170,10 +181,10 @@ export async function DELETE(request: Request) {
       await tx.insert(activityLogs).values({
         action: 'DELETE_FILES',
         details: `Admin deleted files: ${fileIds.join(', ')}`,
-        userId: parseInt(session.user.id)
+        userId: user.$id.substring(0, 36)
       });
 
-      return filesToDelete;
+      return existingFiles;
     });
 
     return NextResponse.json({ 
@@ -191,8 +202,11 @@ export async function DELETE(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || session.user.role !== 'admin') {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -209,13 +223,13 @@ export async function PATCH(request: Request) {
       // Verify file exists
       const [existingFile] = await tx
         .select({
-          id: files.id,
-          name: files.name,
-          userId: files.userId,
-          departmentId: files.departmentId
+          id: filesTable.id,
+          name: filesTable.name,
+          userId: filesTable.userId,
+          departmentId: filesTable.departmentId
         })
-        .from(files)
-        .where(eq(files.id, fileId))
+        .from(filesTable)
+        .where(eq(filesTable.id, fileId))
         .limit(1);
 
       if (!existingFile) {
@@ -224,19 +238,19 @@ export async function PATCH(request: Request) {
 
       // Update file status
       const [updatedFile] = await tx
-        .update(files)
+        .update(filesTable)
         .set({ 
           status,
           updatedAt: new Date()
         })
-        .where(eq(files.id, fileId))
+        .where(eq(filesTable.id, fileId))
         .returning();
 
       // Log the activity
       await tx.insert(activityLogs).values({
         action: 'UPDATE_FILE_ACCESS',
         details: `Admin updated file ${existingFile.name} (${fileId}) status to ${status}`,
-        userId: parseInt(session.user.id)
+        userId: user.$id.substring(0, 36)
       });
 
       return updatedFile;

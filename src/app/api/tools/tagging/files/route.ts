@@ -1,14 +1,18 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { files, departments, fileTags } from '@/server/db/schema/schema';
 import { eq, sql } from 'drizzle-orm';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -22,7 +26,7 @@ export async function GET(request: Request) {
         lastModified: files.updatedAt,
       })
       .from(files)
-      .leftJoin(departments, eq(files.departmentId, sql`${departments.id}::uuid`))
+      .leftJoin(departments, eq(files.departmentId, departments.id))
       .where(eq(files.status, 'active'))
       .orderBy(files.updatedAt);
 
@@ -36,7 +40,7 @@ export async function GET(request: Request) {
             confidence: fileTags.confidence,
           })
           .from(fileTags)
-          .where(eq(fileTags.fileId, sql`${file.id}::integer`));
+          .where(eq(fileTags.fileId, file.id));
 
         return {
           ...file,
@@ -63,8 +67,11 @@ interface TagInput {
 
 export async function POST(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -72,13 +79,13 @@ export async function POST(request: Request) {
 
     // Delete existing tags
     await db.delete(fileTags)
-      .where(eq(fileTags.fileId, sql`${fileId}::integer`));
+      .where(eq(fileTags.fileId, fileId));
 
     // Insert new tags
     if (tags.length > 0) {
       await db.insert(fileTags)
         .values(tags.map((tag: TagInput) => ({
-          fileId: sql`${fileId}::integer`,
+          fileId,
           tag: tag.tag,
           category: tag.category,
           confidence: tag.confidence

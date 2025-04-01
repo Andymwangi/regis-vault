@@ -1,16 +1,33 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { files } from '@/server/db/schema/schema';
 import { and, eq, gte, sql } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { Query } from 'appwrite';
+import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
 import { subDays, format } from 'date-fns';
 
 export async function GET(request: Request) {
   try {
     // Check if user is authenticated and is an admin
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id || session.user.department !== 'Management') {
+    try {
+      const currentUser = await account.get();
+      
+      // Get user profile data to check role
+      const userProfiles = await databases.listDocuments(
+        DATABASES.MAIN,
+        COLLECTIONS.DEPARTMENTS,
+        [
+          Query.equal('userId', sanitizeUserId(currentUser.$id))
+        ]
+      );
+      
+      if (userProfiles.documents.length === 0 || 
+          userProfiles.documents[0].role !== 'admin') {
+        return NextResponse.json({ message: 'Unauthorized - Admin access required' }, { status: 401 });
+      }
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -36,7 +53,7 @@ export async function GET(request: Request) {
       .execute();
 
     // Format the data for the chart
-    const formattedData = storageData.map(item => ({
+    const formattedData = storageData.map((item: { date: string, usage: number }) => ({
       month: format(new Date(item.date), 'MMM d'),
       usage: Math.round(item.usage / (1024 * 1024 * 1024)) // Convert to GB
     }));

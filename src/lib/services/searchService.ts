@@ -1,4 +1,4 @@
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { files, departments, fileTags, ocrResults } from '@/server/db/schema/schema';
 import { eq, and, or, like, sql } from 'drizzle-orm';
 

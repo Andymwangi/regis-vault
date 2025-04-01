@@ -12,157 +12,162 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-  FormDescription,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { account, verifyAppwriteSetup } from "@/lib/appwrite/config";
+import { createAccountServer } from "@/lib/appwrite/server-actions";
 
-interface Department {
-  id: string;
-  name: string;
-  description: string;
-}
-
+// Updated schema with department and role
 const formSchema = z.object({
-  firstName: z.string().min(2, {
-    message: "First name must be at least 2 characters.",
-  }),
-  lastName: z.string().min(2, {
-    message: "Last name must be at least 2 characters.",
+  name: z.string().min(2, {
+    message: "Name must be at least 2 characters.",
+  }).max(32, {
+    message: "Name must be less than 32 characters.",
+  }).refine(value => /^[a-zA-Z0-9 ]+$/.test(value), {
+    message: "Name can only contain letters, numbers, and spaces.",
   }),
   email: z.string().email({
     message: "Please enter a valid email address.",
-  }),
-  phoneNumber: z.string().min(10, {
-    message: "Phone number must be at least 10 characters.",
-  }),
-  departmentId: z.string({
-    required_error: "Please select a department.",
-  }),
-  role: z.string({
-    required_error: "Please select a role.",
+  }).max(64, {
+    message: "Email must be less than 64 characters.",
   }),
   password: z.string().min(6, {
     message: "Password must be at least 6 characters.",
+  }).max(32, {
+    message: "Password must be less than 32 characters.",
+  }).refine(value => /^[a-zA-Z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]+$/.test(value), {
+    message: "Password can only contain standard characters.",
   }),
   confirmPassword: z.string(),
-  termsAccepted: z.boolean().refine(val => val === true, {
-    message: "You must accept the terms and privacy policy.",
+  department: z.string({
+    required_error: "Please select a department.",
+  }).refine(value => departments.includes(value), {
+    message: "Please select a valid department.",
+  }),
+  role: z.enum(["admin", "manager", "user"], {
+    required_error: "Please select a role.",
   }),
 }).refine((data) => data.password === data.confirmPassword, {
-  message: "Passwords don't match",
+  message: "Passwords do not match",
   path: ["confirmPassword"],
 });
 
-const roleOptions = [
-  { value: 'user', label: 'User' },
-  { value: 'manager', label: 'Manager' },
-  { value: 'admin', label: 'Admin' },
+// List of departments
+const departments = [
+  "Human Resources",
+  "Finance",
+  "Information Technology",
+  "Legal",
+  "Operations",
+  "Marketing",
+  "Research"
 ];
 
 export function SignUpForm() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
-  const [departments, setDepartments] = useState<Department[]>([]);
+  const [isOtpSent, setIsOtpSent] = useState(false);
+  const [setupIssues, setSetupIssues] = useState<string[]>([]);
 
+  // Check Appwrite setup on component mount
   useEffect(() => {
-    const fetchDepartments = async () => {
+    const checkSetup = async () => {
       try {
-        const response = await fetch('/api/departments', {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-            'Cache-Control': 'no-cache'
-          },
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('Department API error response:', errorText);
-          throw new Error('Failed to fetch departments');
+        const { isValid, issues } = await verifyAppwriteSetup();
+        if (!isValid) {
+          setSetupIssues(issues);
+          console.error("Appwrite setup issues:", issues);
         }
-
-        const data = await response.json();
-        console.log('Fetched departments:', data);
-        
-        if (!data.departments || !Array.isArray(data.departments)) {
-          console.error('Invalid departments data:', data);
-          throw new Error('Invalid departments data received');
-        }
-
-        setDepartments(data.departments);
       } catch (error) {
-        console.error('Error fetching departments:', error);
-        toast.error("Failed to Load Departments", {
-          description: "Please try refreshing the page",
-        });
+        console.error("Error verifying Appwrite setup:", error);
       }
     };
-
-    fetchDepartments();
+    
+    checkSetup();
   }, []);
-
-  useEffect(() => {
-    console.log('Current departments state:', departments);
-  }, [departments]);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      firstName: "",
-      lastName: "",
+      name: "",
       email: "",
-      phoneNumber: "",
-      departmentId: "",
-      role: "user",
       password: "",
       confirmPassword: "",
-      termsAccepted: false,
+      department: "",
+      role: "user",
     },
+    mode: "onChange",
   });
 
-  useEffect(() => {
-    const subscription = form.watch((value) => {
-      console.log('Form values:', value);
-    });
-    return () => subscription.unsubscribe();
-  }, [form]);
-
   async function onSubmit(values: z.infer<typeof formSchema>) {
+    console.log("Sign-up submission:", values);
+    
+    // If there are setup issues, show a message and don't proceed
+    if (setupIssues.length > 0) {
+      toast.error("Appwrite Setup Issues", {
+        description: "Please check console for details or contact administrator.",
+      });
+      console.error("Appwrite setup issues:", setupIssues);
+      return;
+    }
+    
     setIsLoading(true);
+    
     try {
-      const response = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...values,
-          department: values.departmentId,
-        }),
+      // Use the server-side account creation to bypass guest permission issues
+      const result = await createAccountServer(
+        values.email,
+        values.password,
+        values.name,
+        values.department,
+        values.role
+      );
+      
+      // Login the user after server-side account creation
+      try {
+        await account.createSession(values.email, values.password);
+      } catch (sessionError) {
+        console.warn("Session creation failed, user may need to log in manually:", sessionError);
+        // Continue anyway since account was created
+      }
+      
+      // If successful, show success message
+      toast.success("Account created successfully!", {
+        description: "You will be redirected to the dashboard",
       });
       
-      if (response.ok) {
-        toast.success("Account Created!", {
-          description: "Your account has been created successfully. Please check your email for verification.",
-        });
-        router.push("/sign-in");
-      } else {
-        const data = await response.json();
-        throw new Error(data.message || "Sign up failed");
+      // Redirect to the appropriate dashboard based on the role
+      let redirectPath = "/dashboard/files";
+      if (values.role === "admin") {
+        redirectPath = "/dashboard/admin";
       }
+      
+      router.push(redirectPath);
+      router.refresh();
     } catch (error) {
-      console.error("Sign up error:", error);
-      toast.error("Sign Up Failed", {
-        description: error instanceof Error ? error.message : "Please try again",
-      });
+      console.error("Sign-up error:", error);
+      
+      // Handle specific error cases
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      
+      if (errorMessage.includes("already exists")) {
+        toast.error("Account already exists", {
+          description: "Please try signing in instead or use a different email address",
+        });
+      } else if (errorMessage.includes("Invalid") && errorMessage.includes("userId")) {
+        toast.error("Appwrite Configuration Issue", {
+          description: "Please check your Appwrite setup and permissions",
+        });
+        console.error("Appwrite userId error. Verify your Appwrite configuration and permissions.");
+      } else {
+        toast.error("Sign-up Failed", {
+          description: errorMessage || "Please try again",
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -171,48 +176,42 @@ export function SignUpForm() {
   return (
     <Card className="w-[500px] border-red-100">
       <CardHeader className="space-y-1">
-        <CardTitle className="text-2xl font-bold tracking-tight">Create an Account</CardTitle>
-        <CardDescription>Please fill in your information below</CardDescription>
+        <CardTitle className="text-2xl font-bold tracking-tight">Create an account</CardTitle>
+        <CardDescription>Enter your information to create an account</CardDescription>
       </CardHeader>
+      {setupIssues.length > 0 && (
+        <div className="mx-6 my-2 p-4 bg-amber-50 border border-amber-200 rounded-md">
+          <h3 className="text-amber-800 font-bold mb-2">Appwrite Configuration Issues</h3>
+          <ul className="list-disc pl-5 text-sm text-amber-700">
+            {setupIssues.map((issue, index) => (
+              <li key={index}>{issue}</li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-amber-600">
+            Please share these details with your administrator.
+          </p>
+        </div>
+      )}
       <CardContent>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="firstName"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>First name</FormLabel>
-                    <FormControl>
-                      <Input 
-                        placeholder="John" 
-                        {...field}
-                        className="border-red-100 focus-visible:ring-red-200"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="lastName"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Last name</FormLabel>
-                    <FormControl>
-                      <Input 
-                        placeholder="Doe" 
-                        {...field}
-                        className="border-red-100 focus-visible:ring-red-200"
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Full Name</FormLabel>
+                  <FormControl>
+                    <Input 
+                      placeholder="John Doe" 
+                      {...field} 
+                      className="border-red-100 focus-visible:ring-red-200"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             <FormField
               control={form.control}
               name="email"
@@ -221,25 +220,9 @@ export function SignUpForm() {
                   <FormLabel>Email address</FormLabel>
                   <FormControl>
                     <Input 
+                      type="email" 
                       placeholder="example@orpp.com" 
-                      {...field}
-                      className="border-red-100 focus-visible:ring-red-200"
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="phoneNumber"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Phone number</FormLabel>
-                  <FormControl>
-                    <Input 
-                      placeholder="+254..." 
-                      {...field}
+                      {...field} 
                       className="border-red-100 focus-visible:ring-red-200"
                     />
                   </FormControl>
@@ -250,26 +233,23 @@ export function SignUpForm() {
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}
-                name="departmentId"
+                name="department"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Department</FormLabel>
                     <Select 
-                      onValueChange={(value) => {
-                        console.log('Selected department:', value);
-                        field.onChange(value);
-                      }}
-                      value={field.value}
+                      onValueChange={field.onChange} 
+                      defaultValue={field.value}
                     >
                       <FormControl>
-                        <SelectTrigger className="border-red-100 focus:ring-red-200">
-                          <SelectValue placeholder="Select your department" />
+                        <SelectTrigger className="border-red-100 focus-visible:ring-red-200">
+                          <SelectValue placeholder="Select department" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
                         {departments.map((dept) => (
-                          <SelectItem key={dept.id} value={dept.id}>
-                            {dept.name}
+                          <SelectItem key={dept} value={dept}>
+                            {dept}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -284,18 +264,19 @@ export function SignUpForm() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Role</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
+                    <Select 
+                      onValueChange={field.onChange} 
+                      defaultValue={field.value}
+                    >
                       <FormControl>
-                        <SelectTrigger className="border-red-100 focus:ring-red-200">
-                          <SelectValue placeholder="Select your role" />
+                        <SelectTrigger className="border-red-100 focus-visible:ring-red-200">
+                          <SelectValue placeholder="Select role" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {roleOptions.map((role) => (
-                          <SelectItem key={role.value} value={role.value}>
-                            {role.label}
-                          </SelectItem>
-                        ))}
+                        <SelectItem value="user">User</SelectItem>
+                        <SelectItem value="manager">Manager</SelectItem>
+                        <SelectItem value="admin">Admin</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -313,8 +294,9 @@ export function SignUpForm() {
                     <Input 
                       type="password" 
                       placeholder="••••••" 
-                      {...field}
+                      {...field} 
                       className="border-red-100 focus-visible:ring-red-200"
+                      autoComplete="new-password"
                     />
                   </FormControl>
                   <FormMessage />
@@ -326,36 +308,17 @@ export function SignUpForm() {
               name="confirmPassword"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Confirm password</FormLabel>
+                  <FormLabel>Confirm Password</FormLabel>
                   <FormControl>
                     <Input 
                       type="password" 
                       placeholder="••••••" 
-                      {...field}
+                      {...field} 
                       className="border-red-100 focus-visible:ring-red-200"
+                      autoComplete="new-password"
                     />
                   </FormControl>
                   <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="termsAccepted"
-              render={({ field }) => (
-                <FormItem className="flex flex-row items-start space-x-3 space-y-0">
-                  <FormControl>
-                    <Checkbox
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                      className="border-red-100 data-[state=checked]:bg-red-500 data-[state=checked]:border-red-500"
-                    />
-                  </FormControl>
-                  <div className="space-y-1 leading-none">
-                    <FormLabel>
-                      I accept the terms and conditions and privacy policy
-                    </FormLabel>
-                  </div>
                 </FormItem>
               )}
             />
@@ -364,24 +327,29 @@ export function SignUpForm() {
               className="w-full bg-red-500 hover:bg-red-600" 
               disabled={isLoading}
             >
-              {isLoading ? "Creating account..." : "Create account"}
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating account...
+                </>
+              ) : (
+                "Create Account"
+              )}
             </Button>
           </form>
         </Form>
       </CardContent>
       <CardFooter>
-        <div className="flex flex-col items-center w-full gap-2">
-          <div className="text-sm text-gray-600">
-            Already have an account?{' '}
-            <Button 
-              variant="link" 
-              onClick={() => router.push("/sign-in")} 
-              disabled={isLoading}
-              className="text-red-500 hover:text-red-600 p-0"
-            >
-              Sign in
-            </Button>
-          </div>
+        <div className="text-sm text-gray-600 w-full text-center">
+          Already have an account?{' '}
+          <Button 
+            variant="link" 
+            onClick={() => router.push("/sign-in")} 
+            disabled={isLoading}
+            className="text-red-500 hover:text-red-600 p-0"
+          >
+            Sign in
+          </Button>
         </div>
       </CardFooter>
     </Card>

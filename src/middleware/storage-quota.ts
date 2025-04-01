@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { departments, files } from '@/server/db/schema/schema';
 import { eq, sql } from 'drizzle-orm';
 
@@ -13,7 +13,7 @@ export async function checkStorageQuota(departmentId: string, fileSize: number) 
       })
       .from(departments)
       .leftJoin(files, eq(files.departmentId, departments.id))
-      .where(eq(departments.id, parseInt(departmentId)))
+      .where(eq(departments.id, departmentId))
       .groupBy(departments.id)
       .limit(1);
 

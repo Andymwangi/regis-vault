@@ -1,14 +1,18 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { files, users, departments } from '@/server/db/schema/schema';
 import { eq, and, or, like } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
@@ -23,14 +27,13 @@ export async function GET(request: Request) {
     const searchCondition = search
       ? or(
           like(files.name, `%${search}%`),
-          like(users.firstName, `%${search}%`),
-          like(users.lastName, `%${search}%`)
+          like(users.name, `%${search}%`)
         )
       : undefined;
 
     // Add department filter if provided
     const departmentCondition = department
-      ? eq(departments.id, parseInt(department))
+      ? eq(departments.id, department)
       : undefined;
 
     // Combine all conditions
@@ -53,8 +56,7 @@ export async function GET(request: Request) {
         status: files.status,
         owner: {
           id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
+          name: users.name,
           email: users.email,
         },
         department: {

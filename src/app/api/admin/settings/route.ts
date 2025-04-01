@@ -1,7 +1,9 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
-import { db } from '@/lib/db/db';
+import { Query } from 'appwrite';
+import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
+import { db } from '@/lib/db';
 import { settings } from '@/server/db/schema/schema';
 import { eq } from 'drizzle-orm';
 import { rateLimitMiddleware } from '@/middleware/rate-limit';
@@ -35,12 +37,24 @@ export async function GET(request: Request) {
   const rateLimitResponse = await rateLimitMiddleware(request as any, 'settings:get');
   if (rateLimitResponse.status === 429) return rateLimitResponse;
 
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return new NextResponse('Unauthorized', { status: 401 });
-  }
-
   try {
+    // Get the current user using Appwrite
+    const currentUser = await account.get();
+    
+    // Verify admin role
+    const userProfiles = await databases.listDocuments(
+      DATABASES.MAIN,
+      COLLECTIONS.DEPARTMENTS,
+      [
+        Query.equal('userId', sanitizeUserId(currentUser.$id))
+      ]
+    );
+    
+    if (userProfiles.documents.length === 0 || 
+        userProfiles.documents[0].role !== 'admin') {
+      return new NextResponse('Unauthorized', { status: 401 });
+    }
+
     // Get all settings from the database
     const dbSettings = await db.select().from(settings);
     
@@ -68,12 +82,24 @@ export async function PUT(request: Request) {
   const rateLimitResponse = await rateLimitMiddleware(request as any, 'settings:put');
   if (rateLimitResponse.status === 429) return rateLimitResponse;
 
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return new NextResponse('Unauthorized', { status: 401 });
-  }
-
   try {
+    // Get the current user using Appwrite
+    const currentUser = await account.get();
+    
+    // Verify admin role
+    const userProfiles = await databases.listDocuments(
+      DATABASES.MAIN,
+      COLLECTIONS.DEPARTMENTS,
+      [
+        Query.equal('userId', sanitizeUserId(currentUser.$id))
+      ]
+    );
+    
+    if (userProfiles.documents.length === 0 || 
+        userProfiles.documents[0].role !== 'admin') {
+      return new NextResponse('Unauthorized', { status: 401 });
+    }
+
     const newSettings = await request.json();
 
     // Validate settings structure
