@@ -1,22 +1,29 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { departments } from '@/server/db/schema/schema';
 import { eq } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account, getUserProfileById } from '@/lib/appwrite/config';
 
 export async function PATCH(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.role || session.user.role !== 'admin') {
+    // Check if user is authenticated with Appwrite
+    try {
+      const user = await account.get();
+      
+      // Verify admin role
+      const userProfileData = await getUserProfileById(user.$id);
+      if (!userProfileData || userProfileData.profile.role !== 'admin') {
+        return NextResponse.json({ message: 'Forbidden: Admin access required' }, { status: 403 });
+      }
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
     const { allocatedStorage } = await request.json();
-    const departmentId = parseInt(params.id);
+    const departmentId = params.id;
 
     // Update department storage allocation
     await db

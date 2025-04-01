@@ -1,0 +1,17 @@
+{
+  "buildCommand": "npm run build",
+  "ignoreCommand": "turbo run check --filter=docs",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "outputDirectory": ".next",
+  "excludeFiles": [
+    "src/app/api/admin/activity/trends/route.ts",
+    "src/app/api/admin/storage/departments/[id]/allocation/route.ts",
+    "src/app/api/admin/storage/departments/route.ts",
+    "src/app/api/files/[id]/restore/route.ts",
+    "src/app/api/admin/users/[id]/route.ts",
+    "src/app/api/admin/storage/trends/route.ts",
+    "src/app/api/admin/storage/file-types/route.ts",
+    "src/lib/auth/auth-options.ts"
+  ]
+} 

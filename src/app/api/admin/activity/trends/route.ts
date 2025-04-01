@@ -1,15 +1,23 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
+import { db } from '@/lib/db';
 import { activityLogs } from '@/server/db/schema/schema';
 import { sql, gte } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { account, getUserProfileById } from '@/lib/appwrite/config';
 import { subDays, format } from 'date-fns';
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    // Check if user is authenticated with Appwrite
+    let user;
+    try {
+      user = await account.get();
+      
+      // Verify admin role
+      const userProfileData = await getUserProfileById(user.$id);
+      if (!userProfileData || userProfileData.profile.role !== 'admin') {
+        return NextResponse.json({ message: 'Forbidden: Admin access required' }, { status: 403 });
+      }
+    } catch (error) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
