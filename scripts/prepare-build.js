@@ -148,6 +148,7 @@ const filesToStub = [
   'src/app/api/admin/activity/logs/route.ts',
   'src/app/api/admin/activity/logs/export/route.ts',
   'src/app/api/admin/activity/active-users/route.ts',
+  'src/app/api/admin/storage/users/route.ts',
   // Add tagging API routes
   'src/app/api/tools/tagging/files/route.ts',
   'src/app/api/tools/tagging/tags/route.ts',
