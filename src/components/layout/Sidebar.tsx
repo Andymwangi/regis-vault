@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useSession } from 'next-auth/react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Home,
@@ -58,6 +58,12 @@ const navigation: NavItem[] = [
     roles: ['admin'] 
   },
   { 
+    name: 'Trash', 
+    href: '/dashboard/admin/trash', 
+    icon: Trash2,
+    roles: ['admin'] 
+  },
+  { 
     name: 'Analytics', 
     href: '/dashboard/admin/analytics', 
     icon: BarChart3,
@@ -73,8 +79,27 @@ const navigation: NavItem[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { data: session } = useSession();
-  const userRole = session?.user?.role || 'user';
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const userRole = user?.role || 'user';
+  
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const response = await fetch('/api/auth/me');
+        if (response.ok) {
+          const userData = await response.json();
+          setUser(userData);
+        }
+      } catch (error) {
+        console.error('Failed to fetch user:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchUser();
+  }, []);
 
   const filteredNavigation = navigation.filter(
     item => !item.roles || item.roles.includes(userRole)
@@ -87,28 +112,28 @@ export function Sidebar() {
   };
 
   return (
-    <div className="w-64 border-r bg-white">
+    <div className="w-80 border-r bg-white">
       <div className="flex h-full flex-col">
         <div className="flex-1 space-y-1 p-4">
-          <nav className="space-y-6">
+          <nav className="space-y-8">
             <div>
               <div className="px-3 py-2">
-                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
                   Files
                 </h2>
-                <div className="space-y-1">
+                <div className="space-y-2">
                   {sections.main.map((item) => (
                     <Link
                       key={item.name}
                       href={item.href}
                       className={cn(
-                        'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                        'flex items-center gap-3 rounded-md px-4 py-3 text-base font-medium transition-colors',
                         pathname === item.href
                           ? 'bg-red-50 text-red-600'
                           : 'text-gray-700 hover:bg-gray-50 hover:text-red-600'
                       )}
                     >
-                      <item.icon className="h-5 w-5" />
+                      <item.icon className="h-6 w-6" />
                       {item.name}
                     </Link>
                   ))}
@@ -119,22 +144,22 @@ export function Sidebar() {
             {sections.tools.length > 0 && (
               <div>
                 <div className="px-3 py-2">
-                  <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
                     Tools
                   </h2>
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     {sections.tools.map((item) => (
                       <Link
                         key={item.name}
                         href={item.href}
                         className={cn(
-                          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                          'flex items-center gap-3 rounded-md px-4 py-3 text-base font-medium transition-colors',
                           pathname === item.href
                             ? 'bg-red-50 text-red-600'
                             : 'text-gray-700 hover:bg-gray-50 hover:text-red-600'
                         )}
                       >
-                        <item.icon className="h-5 w-5" />
+                        <item.icon className="h-6 w-6" />
                         {item.name}
                       </Link>
                     ))}
@@ -146,22 +171,22 @@ export function Sidebar() {
             {sections.admin.length > 0 && (
               <div>
                 <div className="px-3 py-2">
-                  <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
                     Admin
                   </h2>
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     {sections.admin.map((item) => (
                       <Link
                         key={item.name}
                         href={item.href}
                         className={cn(
-                          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                          'flex items-center gap-3 rounded-md px-4 py-3 text-base font-medium transition-colors',
                           pathname === item.href
                             ? 'bg-red-50 text-red-600'
                             : 'text-gray-700 hover:bg-gray-50 hover:text-red-600'
                         )}
                       >
-                        <item.icon className="h-5 w-5" />
+                        <item.icon className="h-6 w-6" />
                         {item.name}
                       </Link>
                     ))}

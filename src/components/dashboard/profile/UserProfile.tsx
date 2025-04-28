@@ -1,26 +1,100 @@
 'use client';
 
-import { useState } from 'react';
-import { useSession } from 'next-auth/react';
+import { useState, useEffect } from 'react';
+import { useSession } from '@/components/providers/SessionProvider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { Edit, Upload } from 'lucide-react';
 import Image from 'next/image';
+import { Badge } from '@/components/ui/badge';
+import { getDepartmentById } from '@/lib/appwrite/department-operations';
 
 export function UserProfile() {
-  const { data: session, update } = useSession();
+  const { user } = useSession();
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [departmentName, setDepartmentName] = useState<string>('');
   const [formData, setFormData] = useState({
-    firstName: session?.user?.firstName || '',
-    lastName: session?.user?.lastName || '',
-    email: session?.user?.email || '',
-    phoneNumber: session?.user?.phoneNumber || '',
-    department: session?.user?.department || '',
-    role: session?.user?.role || '',
+    firstName: user?.name?.split(' ')[0] || '',
+    lastName: user?.name?.split(' ')[1] || '',
+    email: user?.email || '',
+    phoneNumber: user?.phoneNumber || '',
+    department: user?.department || '',
+    role: user?.role || '',
   });
+
+  useEffect(() => {
+    // Fetch department name if department ID exists
+    const fetchDepartmentName = async () => {
+      if (user?.department) {
+        try {
+          // Handle case where department is an object instead of a string
+          const departmentId = typeof user.department === 'object' && user.department !== null 
+            ? user.department.$id 
+            : user.department;
+            
+          // Validate department ID format before fetching
+          const validIdRegex = /^[a-zA-Z0-9]{1,36}$/;
+          if (typeof departmentId === 'string' && validIdRegex.test(departmentId)) {
+            const departmentData = await getDepartmentById(departmentId);
+            if (departmentData) {
+              setDepartmentName(departmentData.name);
+            }
+          } else {
+            console.error("Invalid department ID format:", departmentId);
+            // Clear the invalid department ID
+            if (user?.$id) {
+              try {
+                await fetch(`/api/users/${user.$id}/department`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ departmentId: null }),
+                });
+              } catch (updateError) {
+                console.error('Error clearing invalid department ID:', updateError);
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching department:", error);
+        }
+      } else {
+        // If no department field, try to find by membership
+        try {
+          const departments = await fetch('/api/admin/departments').then(res => res.json());
+          if (departments?.success && departments?.data) {
+            // Find department where user is a member
+            const userDept = departments.data.find((dept: any) => 
+              dept.members && Array.isArray(dept.members) && dept.members.includes(user?.$id)
+            );
+            
+            if (userDept) {
+              setDepartmentName(userDept.name);
+              
+              // Update user's department field in database
+              if (user?.$id) {
+                try {
+                  await fetch(`/api/users/${user.$id}/department`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ departmentId: userDept.$id }),
+                  });
+                } catch (updateError) {
+                  console.error('Error updating user department:', updateError);
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching departments:", error);
+        }
+      }
+    };
+
+    fetchDepartmentName();
+  }, [user?.department, user?.$id]);
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
@@ -44,8 +118,8 @@ export function UserProfile() {
       if (!response.ok) throw new Error('Failed to upload avatar');
 
       const data = await response.json();
-      await update({ ...session, user: { ...session?.user, avatarUrl: data.avatarUrl } });
       toast.success('Avatar updated successfully');
+      window.location.reload();
     } catch (error) {
       console.error('Error uploading avatar:', error);
       toast.error('Failed to upload avatar');
@@ -67,8 +141,8 @@ export function UserProfile() {
       if (!response.ok) throw new Error('Failed to update profile');
 
       const updatedUser = await response.json();
-      await update({ ...session, user: { ...session?.user, ...updatedUser } });
       toast.success('Profile updated successfully');
+      window.location.reload();
       setIsEditing(false);
     } catch (error) {
       console.error('Error updating profile:', error);
@@ -76,6 +150,16 @@ export function UserProfile() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const getUserInitials = () => {
+    if (!user || !user.name) return 'U';
+    
+    const nameParts = user.name.split(' ');
+    if (nameParts.length > 1) {
+      return `${nameParts[0][0]}${nameParts[1][0]}`;
+    }
+    return user.name[0].toUpperCase();
   };
 
   return (
@@ -95,9 +179,9 @@ export function UserProfile() {
       <div className="flex flex-col md:flex-row gap-8">
         <div className="flex flex-col items-center space-y-4">
           <div className="relative">
-            {session?.user?.avatarUrl ? (
+            {user?.avatar ? (
               <Image
-                src={session.user.avatarUrl}
+                src={user.avatar}
                 alt="Profile"
                 width={128}
                 height={128}
@@ -105,7 +189,7 @@ export function UserProfile() {
               />
             ) : (
               <div className="w-32 h-32 bg-slate-800 rounded-full flex items-center justify-center text-white text-2xl">
-                {session?.user?.firstName?.[0]}{session?.user?.lastName?.[0]}
+                {getUserInitials()}
               </div>
             )}
             <label
@@ -124,9 +208,12 @@ export function UserProfile() {
             </label>
           </div>
           <div className="text-center">
-            <h3 className="font-medium">{session?.user?.firstName} {session?.user?.lastName}</h3>
-            <p className="text-gray-500">{session?.user?.role}</p>
-            <p className="text-sm text-gray-400">Member since {new Date(session?.user?.createdAt || Date.now()).toLocaleDateString()}</p>
+            <h3 className="font-medium">{user?.name}</h3>
+            <p className="text-gray-500 mb-2">{user?.role}</p>
+            {departmentName && (
+              <Badge variant="secondary" className="mb-2">{departmentName}</Badge>
+            )}
+            <p className="text-sm text-gray-400">Member since {new Date().toLocaleDateString()}</p>
           </div>
         </div>
 
@@ -172,7 +259,7 @@ export function UserProfile() {
               <Label htmlFor="department">Department</Label>
               <Input
                 id="department"
-                value={formData.department}
+                value={departmentName || 'Not Assigned'}
                 disabled={true}
               />
             </div>

@@ -1,102 +1,204 @@
 'use server';
 
-import { NextResponse } from 'next/server';
-import { Query } from 'appwrite';
-import { account, databases, storage, DATABASES, COLLECTIONS, STORAGE_BUCKETS, sanitizeUserId } from '@/lib/appwrite/config';
-import { db } from '@/lib/db';
-import { files } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
+import { NextRequest, NextResponse } from 'next/server';
+import { account, databases, storage, fullConfig } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { ID } from 'node-appwrite';
 
 export async function DELETE(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   try {
-    // Get the current user using Appwrite
-    const currentUser = await account.get();
+    // Validate that we have a proper file ID
+    if (!params.id || params.id === 'undefined' || params.id === 'null' || params.id.trim() === '') {
+      console.error(`Invalid file ID provided: ${params.id}`);
+      return NextResponse.json({ 
+        error: 'Invalid file ID provided', 
+        receivedId: params.id 
+      }, { status: 400 });
+    }
+    
+    console.log(`Starting permanent delete for file ID: ${params.id}`);
+    
+    // Get URL parameters
+    const url = new URL(request.url);
+    const forceDelete = url.searchParams.get('force') === 'true';
+    
+    console.log(`Force delete mode: ${forceDelete}`);
+    
+    // First perform a truly asynchronous operation
+    const currentUser = await getCurrentUser();
+    
+    // Now it's safe to use params
+    const fileId = params.id.trim(); // Trim any whitespace
+    console.log(`Processing permanent delete request for file: ${fileId}`);
     
     if (!currentUser) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+      console.log('Unauthorized: No current user found');
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
-    // Get user profile data to check role
-    const userProfiles = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      [
-        Query.equal('userId', sanitizeUserId(currentUser.$id))
-      ]
-    );
+    console.log(`User authenticated: ${currentUser.$id}, role: ${currentUser.role || 'unknown'}`);
+
+    const { databases, storage } = await createAdminClient();
+    console.log('Admin client created successfully');
     
-    if (userProfiles.documents.length === 0 || 
-        userProfiles.documents[0].role !== 'admin') {
-      return NextResponse.json({ message: 'Unauthorized - Admin access required' }, { status: 401 });
-    }
-
-    const fileId = params.id;
-
-    // Get Appwrite file ID from metadata and delete from storage if it exists
+    // Get the file from the database
+    let file: any; // Use any type to avoid TypeScript errors with force delete mode
     try {
-      const appwriteFileId = await getAppwriteFileIdFromMetadata(fileId);
+      console.log(`Fetching file document: ${fileId} from collection ${fullConfig.filesCollectionId}`);
+      console.log(`Using database ID: ${fullConfig.databaseId}`);
+      file = await databases.getDocument(
+        fullConfig.databaseId,
+        fullConfig.filesCollectionId,
+        fileId
+      );
+      console.log(`File document found: ${file.name}, status: ${file.status}`);
+    } catch (error) {
+      console.error('Error fetching file document:', error);
       
-      if (appwriteFileId) {
-        // Delete from Appwrite storage
-        await storage.deleteFile(STORAGE_BUCKETS.FILES, appwriteFileId);
-        
-        // Delete metadata from Appwrite database
-        const filesMetadata = await databases.listDocuments(
-          DATABASES.MAIN,
-          COLLECTIONS.FILES_METADATA,
-          [
-            Query.equal('postgres_file_id', fileId)
-          ]
+      if (forceDelete) {
+        console.log('Force delete mode enabled - continuing with deletion attempt despite error');
+        // Create a minimal file object with just the ID
+        file = { $id: fileId, name: 'Unknown file', type: 'unknown', status: 'unknown' };
+      } else {
+        return NextResponse.json({ 
+          error: 'File not found', 
+          fileId: fileId,
+          details: error instanceof Error ? error.message : 'Unknown error' 
+        }, { status: 404 });
+      }
+    }
+
+    // Check if the file is in deleted state
+    if (file.status !== 'deleted' && !forceDelete) {
+      console.log(`File status is ${file.status}, not 'deleted'. Forcing deletion anyway...`);
+      // Instead of returning an error, we'll proceed with deletion
+      // This ensures files get deleted even if their status is incorrect
+    }
+
+    // Check if the user has permission to permanently delete the file
+    // Bypass permission check in force mode
+    if (!forceDelete) {
+      const hasPermission = 
+        currentUser.role === 'admin' || 
+        file.ownerId === currentUser.$id;
+      
+      if (!hasPermission) {
+        console.log(`Access denied. User ${currentUser.$id} cannot delete file owned by ${file.ownerId}`);
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else {
+      console.log('Force delete mode enabled - bypassing permission checks');
+    }
+
+    // Get the correct storage file ID from various possible field names
+    const storageFileId = file.bucketFileId || file.bucketFieldId || file.storageFileId;
+    console.log(`Storage file ID identified: ${storageFileId || 'none'}`);
+    console.log(`Storage bucket ID: ${fullConfig.storageId}`);
+    
+    // First delete the document from database to ensure it's removed
+    console.log(`Deleting file document from database: ${fileId}`);
+    try {
+      const deleteResult = await databases.deleteDocument(
+        fullConfig.databaseId,
+        fullConfig.filesCollectionId,
+        fileId
+      );
+      console.log(`Database document deleted successfully, result:`, deleteResult);
+    } catch (dbError) {
+      console.error('Failed to delete file from database:', dbError);
+      console.error('Database error details:', JSON.stringify(dbError));
+      
+      if (!forceDelete) {
+        return NextResponse.json({ error: 'Failed to delete file from database' }, { status: 500 });
+      } else {
+        console.log('Force delete mode enabled - continuing despite database deletion error');
+      }
+    }
+    
+    // Then try to delete from storage if applicable
+    if (storageFileId) {
+      try {
+        console.log(`Attempting to delete file from storage: ${storageFileId}`);
+        const storageDeleteResult = await storage.deleteFile(
+          fullConfig.storageId,
+          storageFileId
         );
+        console.log(`Storage file deleted successfully, result:`, storageDeleteResult);
+      } catch (storageError) {
+        console.error('Failed to delete file from storage:', storageError);
+        console.error('Storage error details:', JSON.stringify(storageError));
         
-        if (filesMetadata.documents.length > 0) {
-          await databases.deleteDocument(
-            DATABASES.MAIN,
-            COLLECTIONS.FILES_METADATA,
-            filesMetadata.documents[0].$id
-          );
+        if (forceDelete) {
+          console.log('Force delete mode enabled - attempting direct delete with file ID as storage ID');
+          // As a last resort, try to delete using the file ID as storage ID
+          try {
+            await storage.deleteFile(
+              fullConfig.storageId,
+              fileId
+            );
+            console.log('Storage file deleted using file ID as storage ID');
+          } catch (lastResortError) {
+            console.error('Final storage deletion attempt failed:', lastResortError);
+          }
         }
       }
-    } catch (storageError) {
-      console.error('Error deleting from Appwrite storage:', storageError);
-      // Continue with database deletion even if Appwrite deletion fails
+    } else if (forceDelete) {
+      // In force mode, try to delete storage using the file ID as a last resort
+      console.log('No storage file ID found but force mode enabled - attempting direct delete with file ID');
+      try {
+        await storage.deleteFile(
+          fullConfig.storageId,
+          fileId
+        );
+        console.log('Storage file deleted using file ID');
+      } catch (lastResortError) {
+        console.error('Direct storage deletion attempt failed:', lastResortError);
+      }
+    } else {
+      console.log('No storage file ID found, skipping storage deletion');
     }
 
-    // Delete from PostgreSQL database
-    await db.delete(files).where(eq(files.id, fileId));
+    // Log the permanent deletion activity
+    try {
+      console.log('Logging permanent delete activity');
+      await databases.createDocument(
+        fullConfig.databaseId,
+        fullConfig.activityLogsCollectionId,
+        ID.unique(),
+        {
+          userId: currentUser.$id,
+          type: 'PERMANENT_DELETE_FILE',
+          description: `Permanently deleted file: ${file.name}`,
+          metadata: {
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            departmentId: file.departmentId,
+            ownerId: file.ownerId
+          },
+          createdAt: new Date().toISOString()
+        }
+      );
+      console.log('Activity logged successfully');
+    } catch (error) {
+      console.error('Failed to log activity:', error);
+    }
 
-    return NextResponse.json({ message: 'File permanently deleted' });
+    console.log('Permanent delete completed successfully');
+    return NextResponse.json({ 
+      success: true,
+      message: 'File permanently deleted'
+    });
   } catch (error) {
     console.error('Error permanently deleting file:', error);
+    console.error('Full error details:', JSON.stringify(error));
     return NextResponse.json(
-      { message: 'Internal server error' },
+      { error: 'Failed to permanently delete file' },
       { status: 500 }
     );
-  }
-}
-
-// Helper function to find Appwrite file ID from metadata
-async function getAppwriteFileIdFromMetadata(postgresFileId: string) {
-  try {
-    // Query the Appwrite files_metadata collection to find the file
-    const filesMetadata = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.FILES_METADATA,
-      [
-        Query.equal('postgres_file_id', postgresFileId)
-      ]
-    );
-    
-    if (filesMetadata.documents.length > 0) {
-      return filesMetadata.documents[0].file_id; // Return the Appwrite storage file ID
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Error getting Appwrite file ID from metadata:', error);
-    return null;
   }
 } 

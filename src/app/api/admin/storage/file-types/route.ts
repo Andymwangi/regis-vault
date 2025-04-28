@@ -1,33 +1,75 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
-import { files } from '@/server/db/schema/schema';
-import { sql } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 
-export async function GET() {
+export async function GET(request: Request): Promise<NextResponse> {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    // Check authentication
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
     }
-
-    const results = await db
-      .select({
-        type: files.type,
-        count: sql<number>`count(*)::int`,
-        totalSize: sql<number>`sum(${files.size})::int`,
-      })
-      .from(files)
-      .groupBy(files.type)
-      .orderBy(sql`sum(${files.size}) desc`);
-
-    return NextResponse.json({ distribution: results });
+    
+    // Check admin role
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Forbidden: Requires admin access' },
+        { status: 403 }
+      );
+    }
+    
+    // Get the Appwrite client
+    const { databases } = await createAdminClient();
+    
+    // Get files
+    const filesResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      [Query.equal('status', ['active'])]
+    );
+    
+    // Count occurrences of each file type
+    const fileTypesMap: Record<string, number> = {};
+    let totalSize: Record<string, number> = {};
+    
+    filesResult.documents.forEach(file => {
+      const fileType = file.type || 'other';
+      
+      // Count files by type
+      if (!fileTypesMap[fileType]) {
+        fileTypesMap[fileType] = 0;
+      }
+      fileTypesMap[fileType]++;
+      
+      // Sum size by type
+      if (!totalSize[fileType]) {
+        totalSize[fileType] = 0;
+      }
+      totalSize[fileType] += (file.size || 0);
+    });
+    
+    // Convert to array format with additional stats - formatted as needed by the PieChart
+    const distribution = Object.entries(fileTypesMap).map(([type, count]) => ({
+      type,
+      count,
+      totalSize: totalSize[type]
+    }));
+    
+    // Return file types with stats in the format expected by the frontend
+    return NextResponse.json({
+      distribution,
+      totalFiles: filesResult.total
+    });
   } catch (error) {
-    console.error('Error fetching file type distribution:', error);
+    console.error('Error fetching file types:', error);
     return NextResponse.json(
-      { message: 'Internal server error' },
+      { error: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
     );
   }
-} 
+}

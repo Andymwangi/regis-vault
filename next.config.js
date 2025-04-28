@@ -26,7 +26,9 @@ const nextConfig = {
   // Ensure external packages with server-side functionality are handled properly
   transpilePackages: ['postgres', 'drizzle-orm'],
   experimental: {
-    serverActions: true,
+    serverActions: {
+      allowedOrigins: ['localhost:3000']
+    },
   },
   // Ignore TypeScript errors during build since we're migrating from Next Auth to Appwrite
   // Only ignore in production/preview deployments, not in development

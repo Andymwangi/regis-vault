@@ -1,22 +1,15 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { processOCR } from '@/lib/ocr/processor';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId, getUserProfileById } from '@/lib/appwrite/config';
-import { Query } from 'appwrite';
+import { processOcrInBackground } from '@/lib/appwrite/ocr-operations';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { Query } from 'node-appwrite';
+import { getCurrentUser } from '@/lib/actions/user.actions';
 import { Redis } from '@upstash/redis';
 
 // Add a simple API key check for security
 const API_KEY = process.env.OCR_WORKER_API_KEY;
-
-// Define OCR job interface
-interface OCRJob {
-  fileId: string;
-  fileUrl: string;
-  status: string;
-  createdAt?: string;
-  [key: string]: any;
-}
 
 // Initialize Redis client
 const getRedisClient = async () => {
@@ -35,15 +28,17 @@ export async function GET(request: Request) {
   // Check if it's a cron job (with API key) or an admin user
   const isCronJob = API_KEY && providedKey === API_KEY;
   
+  let isAdmin = false;
   if (!isCronJob) {
     // If not a cron job with valid API key, check if it's an admin user
     try {
-      const user = await account.get();
+      const currentUser = await getCurrentUser();
+      if (!currentUser) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
       
-      // Verify admin role using the helper function
-      const userProfileData = await getUserProfileById(user.$id);
-      
-      if (!userProfileData || userProfileData.profile.role !== 'admin') {
+      isAdmin = currentUser.role === 'admin';
+      if (!isAdmin) {
         return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
       }
     } catch (error) {
@@ -55,81 +50,73 @@ export async function GET(request: Request) {
     // Get Redis client
     const redis = await getRedisClient();
     
-    // Find pending OCR jobs
-    const keys = await redis.keys('ocr:job:*');
-    const pendingJobs: Array<OCRJob & { key: string }> = [];
+    // Find jobs that need processing
+    const { databases } = await createAdminClient();
+    const ocrJobs = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.ocrResultsCollectionId,
+      [
+        Query.equal('status', ['processing']),
+        Query.limit(1)
+      ]
+    );
     
-    for (const key of keys) {
-      const job = await redis.get(key) as OCRJob | null;
-      if (job && job.status === 'queued') {
-        pendingJobs.push({
-          key,
-          ...job
-        });
-      }
-    }
-    
-    if (pendingJobs.length === 0) {
+    if (ocrJobs.documents.length === 0) {
       return NextResponse.json({ status: 'idle', message: 'No pending jobs' });
     }
     
-    // Process the oldest job (sort by createdAt)
-    const jobsWithDates = pendingJobs.map(job => ({
-      ...job,
-      createdAtTime: job.createdAt ? new Date(job.createdAt).getTime() : 0
-    }));
+    const job = ocrJobs.documents[0];
+    const fileId = job.fileId;
     
-    const oldestJob = jobsWithDates.sort((a, b) => a.createdAtTime - b.createdAtTime)[0];
-    const { fileId, fileUrl } = oldestJob;
+    // Get the file details to get bucketFileId
+    const file = await databases.getDocument(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      fileId
+    );
     
-    // Update status to processing
-    await redis.set(oldestJob.key, {
-      ...oldestJob,
+    // Cache job status in Redis for admin dashboard
+    await redis.set(`ocr:job:${fileId}`, {
+      fileId,
+      fileName: file.name,
       status: 'processing',
       processingStartedAt: new Date().toISOString()
     });
     
-    // Process the OCR
-    const result = await processOCR(fileId, fileUrl);
-    
-    // Update with completed status
-    await redis.set(oldestJob.key, {
-      ...oldestJob,
-      status: 'completed',
-      result,
-      completedAt: new Date().toISOString()
-    });
-    
-    return NextResponse.json({ 
-      status: 'completed', 
-      jobId: oldestJob.key,
-      fileId: fileId,
-      result
-    });
+    // Process the OCR job
+    try {
+      // Call processOcrInBackground directly even though it's technically
+      // a private function in the module - in a real implementation, you'd
+      // make this function public or create a dedicated API
+      const result = await processOcrInBackground(fileId, file.bucketFileId);
+      
+      // Update Redis cache
+      await redis.set(`ocr:job:${fileId}`, {
+        fileId,
+        fileName: file.name,
+        status: 'completed',
+        completedAt: new Date().toISOString()
+      });
+      
+      return NextResponse.json({ 
+        status: 'completed', 
+        jobId: `ocr:job:${fileId}`,
+        fileId
+      });
+    } catch (error) {
+      // Update Redis cache
+      await redis.set(`ocr:job:${fileId}`, {
+        fileId,
+        fileName: file.name,
+        status: 'failed',
+        error: error instanceof Error ? error.message : 'Unknown error',
+        failedAt: new Date().toISOString()
+      });
+      
+      throw error; // Re-throw to be caught by outer catch block
+    }
   } catch (error) {
     console.error('Error processing OCR job:', error);
-    
-    // If we have a jobKey, update the job with error status
-    const { searchParams } = new URL(request.url);
-    const jobKey = searchParams.get('jobKey');
-    
-    if (jobKey) {
-      try {
-        const redis = await getRedisClient();
-        const job = await redis.get(jobKey);
-        
-        if (job) {
-          await redis.set(jobKey, {
-            ...job,
-            status: 'failed',
-            error: error instanceof Error ? error.message : 'Unknown error',
-            failedAt: new Date().toISOString()
-          });
-        }
-      } catch (redisError) {
-        console.error('Error updating job status:', redisError);
-      }
-    }
     
     return NextResponse.json({ 
       status: 'error', 

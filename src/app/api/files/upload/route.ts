@@ -1,114 +1,89 @@
 import { NextRequest, NextResponse } from "next/server";
-import { storage, databases, DATABASES, COLLECTIONS, STORAGE_BUCKETS, ID } from "@/lib/appwrite/config";
-import { account } from "@/lib/appwrite/config";
+import { createAdminClient } from "@/lib/appwrite";
+import { fullConfig } from "@/lib/appwrite/config";
+import { ID } from "node-appwrite";
+import { getCurrentUser } from "@/lib/actions/user.actions";
+import { constructFileUrl, getFileType } from "@/lib/utils";
+import { uploadFile } from '@/lib/appwrite/file-operations';
+import { getSession } from '@/lib/auth/session';
+
+// Format the response to ensure it has consistent structure
+const formatFileResponse = (file: any) => {
+  if (!file) return null;
+  
+  return {
+    // Ensure both id and $id exist for compatibility
+    id: file.id || file.$id || null,
+    $id: file.$id || file.id || null,
+    name: file.name || '',
+    url: file.url || '',
+    size: file.size || 0,
+    type: file.type || 'unknown',
+    extension: file.extension || '',
+    bucketFileId: file.bucketFileId || file.bucketFieldId || null,
+    bucketFieldId: file.bucketFieldId || file.bucketFileId || null,
+    // Include all original properties
+    ...file
+  };
+};
 
 export async function POST(request: NextRequest) {
   try {
-    // Check if user is authenticated with Appwrite
-    try {
-      await account.get();
-    } catch (error) {
-      return NextResponse.json(
-        { message: "Unauthorized" },
-        { status: 401 }
-      );
+    console.log('[API] /api/files/upload: Received file upload request');
+    
+    // Check authentication
+    const session = await getSession();
+    if (!session) {
+      console.log('[API] /api/files/upload: Authentication failed - no session');
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
+    
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json({ error: 'User not found' }, { status: 401 });
+    }
+    
+    console.log('[API] /api/files/upload: User authenticated', { userId: session.id });
 
+    // Get form data
     const formData = await request.formData();
-    const uploadedFiles = formData.getAll("files") as File[];
-    const departmentId = formData.get("departmentId") as string;
-    const userId = formData.get("userId") as string;
+    const file = formData.get('file') as File;
+    const redirectPath = formData.get('path') as string || '/dashboard/files';
+    const departmentId = formData.get('departmentId') as string || undefined;
 
-    if (!uploadedFiles.length) {
-      return NextResponse.json(
-        { message: "No files provided" },
-        { status: 400 }
-      );
+    if (!file) {
+      console.log('[API] /api/files/upload: No file provided in request');
+      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
-
-    if (!userId || !departmentId) {
-      return NextResponse.json(
-        { message: "User ID and Department ID are required" },
-        { status: 400 }
-      );
-    }
-
-    const results = await Promise.all(
-      uploadedFiles.map(async (file) => {
-        try {
-          // Upload file to Appwrite Storage
-          const fileUpload = await storage.createFile(
-            STORAGE_BUCKETS.FILES,
-            ID.unique(),
-            file
-          );
-
-          // Create metadata record in Appwrite Database
-          const fileMetadata = await databases.createDocument(
-            DATABASES.MAIN,
-            COLLECTIONS.FILES_METADATA,
-            ID.unique(),
-            {
-              name: file.name,
-              type: file.type,
-              size: file.size,
-              storageFileId: fileUpload.$id,
-              userId: userId,
-              departmentId: departmentId,
-              status: 'active',
-              url: storage.getFileView(STORAGE_BUCKETS.FILES, fileUpload.$id),
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            }
-          );
-
-          // Log activity in Appwrite Database
-          await databases.createDocument(
-            DATABASES.MAIN,
-            COLLECTIONS.FILES, // Using this for activity logs
-            ID.unique(),
-            {
-              userId: userId,
-              action: "FILE_UPLOADED",
-              details: `Uploaded file: ${file.name}`,
-              fileId: fileMetadata.$id,
-              createdAt: new Date().toISOString(),
-            }
-          );
-
-          return {
-            success: true,
-            file: {
-              id: fileMetadata.$id,
-              name: file.name,
-              type: file.type,
-              size: file.size,
-              url: fileMetadata.url,
-            },
-          };
-        } catch (error) {
-          console.error(`Error uploading file ${file.name}:`, error);
-          return {
-            success: false,
-            error: `Failed to upload ${file.name}`,
-          };
-        }
-      })
-    );
-
-    const successfulUploads = results.filter((r) => r.success);
-    const failedUploads = results.filter((r) => !r.success);
-
-    return NextResponse.json({
-      message: "Files uploaded successfully",
-      successfulUploads,
-      failedUploads,
+    
+    console.log('[API] /api/files/upload: Processing file', { 
+      name: file.name, 
+      size: file.size, 
+      type: file.type,
+      redirectPath
     });
+
+    // Upload the file with the correct parameters
+    const result = await uploadFile({
+      file,
+      ownerId: currentUser.$id,
+      departmentId,
+      redirectPath
+    });
+    
+    console.log('[API] /api/files/upload: Upload successful', { 
+      fileId: result.$id || result.id,
+      fileName: result.name
+    });
+
+    // Format and return the result
+    const formattedResult = formatFileResponse(result);
+    return NextResponse.json(formattedResult);
   } catch (error) {
-    console.error("File upload error:", error);
+    console.error('[API] /api/files/upload: Error in file upload', error);
     return NextResponse.json(
-      { message: "Failed to upload files" },
+      { error: error instanceof Error ? error.message : 'Failed to upload file' },
       { status: 500 }
     );
   }
-} 
+}

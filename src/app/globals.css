@@ -393,18 +393,57 @@
 /* Responsive Utilities */
 @media (max-width: 640px) {
   .container {
-    @apply px-4;
+    @apply px-6;
   }
 }
 
 @media (min-width: 641px) and (max-width: 1024px) {
   .container {
-    @apply px-6;
+    @apply px-8;
   }
 }
 
 @media (min-width: 1025px) {
   .container {
-    @apply px-8;
+    @apply px-10;
   }
+}
+
+/* Auth Component Styles */
+.auth-form-wrapper form {
+  width: 100%;
+}
+
+.auth-form-wrapper .error-message {
+  color: #ef4444;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+  text-align: center;
+}
+
+/* OTP Modal Styles */
+.shad-alert-dialog {
+  border-color: #fee2e2;
+  max-width: 400px;
+}
+
+.otp-close-button {
+  cursor: pointer;
+}
+
+/* Auth Banner Animation */
+@keyframes floatEffect {
+  0% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+.auth-banner-icon {
+  animation: floatEffect 3s ease-in-out infinite;
 }

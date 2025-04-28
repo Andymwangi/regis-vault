@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DashboardLayout } from '@/components/common/layout/DashboardLayout';
+import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -58,16 +58,28 @@ export default function TaggingPage() {
       const response = await fetch(`/api/tools/tagging/suggestions?fileId=${fileId}`);
       if (!response.ok) throw new Error('Failed to get suggestions');
       const data = await response.json();
-      setSuggestions(data.suggestions);
+      
+      // Handle both formats - either direct array or nested in suggestions property
+      const suggestionsArray = Array.isArray(data) ? data : data.suggestions || [];
+      
+      // Map the suggestion format if needed
+      const formattedSuggestions = suggestionsArray.map((suggestion: { tag: any; confidence: any; category: any; }) => ({
+        tag: suggestion.tag,
+        confidence: suggestion.confidence || 0.5,
+        category: suggestion.category || 'other'
+      }));
+      
+      setSuggestions(formattedSuggestions);
       setSelectedFile(files.find(f => f.id === fileId) || null);
     } catch (error) {
       console.error('Error getting suggestions:', error);
       toast.error('Failed to get tag suggestions');
+      // Set empty array to prevent mapping errors
+      setSuggestions([]);
     } finally {
       setProcessing(false);
     }
   };
-
   const addTag = async (fileId: string, tag: string) => {
     try {
       const response = await fetch('/api/tools/tagging/tags', {
@@ -137,11 +149,11 @@ export default function TaggingPage() {
 
   return (
     <DashboardLayout>
-      <div className="container mx-auto p-6 max-w-7xl">
-        <div className="flex justify-between items-center mb-6">
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold">AI File Tagging</h1>
-            <p className="text-gray-500">Automatically tag and categorize your files</p>
+            <h1 className="text-3xl font-bold">AI File Tagging</h1>
+            <p className="text-muted-foreground">Automatically tag and categorize your files</p>
           </div>
         </div>
 
@@ -166,12 +178,12 @@ export default function TaggingPage() {
                     className={`p-3 rounded-lg cursor-pointer transition-colors ${
                       selectedFile?.id === file.id
                         ? 'bg-primary/10 border border-primary'
-                        : 'hover:bg-gray-100'
+                        : 'hover:bg-muted'
                     }`}
                     onClick={() => getSuggestions(file.id)}
                   >
                     <div className="font-medium">{file.name}</div>
-                    <div className="text-sm text-gray-500">
+                    <div className="text-sm text-muted-foreground">
                       {file.department || 'No department'}
                     </div>
                     <div className="flex flex-wrap gap-1 mt-2">
@@ -221,11 +233,11 @@ export default function TaggingPage() {
                     {suggestions.map((suggestion) => (
                       <div
                         key={suggestion.tag}
-                        className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                        className="flex items-center justify-between p-3 bg-muted rounded-lg"
                       >
                         <div>
                           <div className="font-medium">{suggestion.tag}</div>
-                          <div className="text-sm text-gray-500">
+                          <div className="text-sm text-muted-foreground">
                             {suggestion.category} • {Math.round(suggestion.confidence * 100)}% confidence
                           </div>
                         </div>
@@ -242,46 +254,44 @@ export default function TaggingPage() {
                 )}
               </>
             ) : (
-              <div className="text-center text-gray-500 py-8">
+              <div className="text-center text-muted-foreground py-8">
                 Select a file to view AI tag suggestions
               </div>
             )}
           </Card>
 
-          {/* Manual Tag Input */}
+          {/* Manual Tagging */}
           <Card className="p-6">
             <div className="flex items-center gap-2 mb-4">
               <Plus className="h-5 w-5" />
-              <h2 className="text-lg font-semibold">Add Custom Tag</h2>
+              <h2 className="text-lg font-semibold">Add Tags</h2>
             </div>
             {selectedFile ? (
               <div className="space-y-4">
-                <Input
-                  placeholder="Enter new tag..."
-                  value={newTag}
-                  onChange={(e) => setNewTag(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && newTag.trim()) {
-                      addTag(selectedFile.id, newTag.trim());
-                      setNewTag('');
-                    }
-                  }}
-                />
-                <Button
-                  className="w-full"
-                  onClick={() => {
-                    if (newTag.trim()) {
-                      addTag(selectedFile.id, newTag.trim());
-                      setNewTag('');
-                    }
-                  }}
-                >
-                  Add Tag
-                </Button>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Enter tag..."
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                  />
+                  <Button
+                    onClick={() => {
+                      if (newTag.trim()) {
+                        addTag(selectedFile.id, newTag.trim());
+                        setNewTag('');
+                      }
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Press Enter or click Add to add a new tag
+                </div>
               </div>
             ) : (
-              <div className="text-center text-gray-500 py-8">
-                Select a file to add custom tags
+              <div className="text-center text-muted-foreground py-8">
+                Select a file to add tags
               </div>
             )}
           </Card>

@@ -1,71 +1,71 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { users, files, sessions } from '@/server/db/schema/schema';
-import { and, eq, gte, sql } from 'drizzle-orm';
-import { Query } from 'appwrite';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
-import { subDays } from 'date-fns';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 
 export async function GET(request: Request) {
   try {
-    // Check if user is authenticated and is an admin
-    try {
-      const currentUser = await account.get();
-      
-      // Get user profile data to check role
-      const userProfiles = await databases.listDocuments(
-        DATABASES.MAIN,
-        COLLECTIONS.DEPARTMENTS,
-        [
-          Query.equal('userId', sanitizeUserId(currentUser.$id))
-        ]
-      );
-      
-      if (userProfiles.documents.length === 0 || 
-          userProfiles.documents[0].role !== 'admin') {
-        return NextResponse.json({ message: 'Unauthorized - Admin access required' }, { status: 401 });
-      }
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Unauthorized - Admin access required' }, { status: 401 });
+    }
 
+    const { databases } = await createAdminClient();
     const { searchParams } = new URL(request.url);
     const timeRange = parseInt(searchParams.get('timeRange') || '30');
-    const dateLimit = subDays(new Date(), timeRange);
 
     // Get total users count
-    const totalUsersCount = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(users)
-      .execute();
-
+    const usersResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      []
+    );
+    
     // Get total storage used
-    const totalStorage = await db
-      .select({
-        total: sql<number>`sum(size)`
-      })
-      .from(files)
-      .where(eq(files.status, 'active'))
-      .execute();
+    const filesResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      [Query.equal('status', ['active'])]
+    );
+    
+    const totalStorage = filesResult.documents.reduce(
+      (sum, file) => sum + (file.size || 0),
+      0
+    );
 
-    // Get active sessions count
-    const activeSessions = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(sessions)
-      .where(
-        and(
-          eq(sessions.active, true),
-          gte(sessions.lastActivity, new Date(Date.now() - 1000 * 60 * 15)) // Active in last 15 minutes
-        )
-      )
-      .execute();
+    // Get active sessions - for Appwrite, we'll use activity logs from last 15 minutes
+    const fifteenMinutesAgo = new Date();
+    fifteenMinutesAgo.setMinutes(fifteenMinutesAgo.getMinutes() - 15);
+    
+    const activeSessionsResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.activityLogsCollectionId,  // Added comma here
+      [
+        Query.greaterThan('createdAt', fifteenMinutesAgo.toISOString())
+      ]
+    );
+    
+    // Count unique users with activity in the last 15 minutes
+    const activeUsers = new Set<string>();
+    activeSessionsResult.documents.forEach(log => {
+      if (log.userId) {
+        activeUsers.add(log.userId);
+      }
+    });
 
     return NextResponse.json({
-      totalUsers: totalUsersCount[0]?.count || 0,
-      totalStorage: totalStorage[0]?.total || 0,
-      activeSessions: activeSessions[0]?.count || 0
+      totalUsers: usersResult.total,
+      totalStorage: totalStorage,
+      activeSessions: activeUsers.size
     });
   } catch (error) {
     console.error('Error fetching admin stats:', error);
@@ -74,4 +74,4 @@ export async function GET(request: Request) {
       { status: 500 }
     );
   }
-} 
+}

@@ -1,22 +1,26 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { activityLogs, users } from '@/server/db/schema/schema';
-import { eq, and, or, like, sql, gte, lte } from 'drizzle-orm';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 import { subDays } from 'date-fns';
-import { account } from '@/lib/appwrite/config';
 
 export async function GET(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Forbidden' }, { status: 403 });
+    }
 
+    const { databases } = await createAdminClient();
     const { searchParams } = new URL(request.url);
     const timeRange = searchParams.get('timeRange') || '24h';
     const userId = searchParams.get('user') || 'all';
@@ -35,48 +39,55 @@ export async function GET(request: Request) {
         startDate = subDays(now, 1);
     }
 
-    // Build the where clause
-    const whereClause = gte(activityLogs.createdAt, startDate);
+    // Build query
+    const queries = [
+      Query.greaterThanEqual('createdAt', startDate.toISOString()),
+      Query.orderDesc('createdAt')
+    ];
 
     // Add user filter if provided
-    const userCondition = userId !== 'all'
-      ? eq(users.id, userId)
-      : undefined;
+    if (userId !== 'all') {
+      queries.push(Query.equal('userId', [userId]));
+    }
 
-    // Combine conditions
-    const finalWhereClause = and(
-      whereClause,
-      ...(userCondition ? [userCondition] : [])
+    // Get logs
+    const logsResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      'activity_logs',
+      queries
     );
 
-    // Execute query with combined conditions
-    const results = await db
-      .select({
-        id: activityLogs.id,
-        userId: activityLogs.userId,
-        name: users.name,
-        email: users.email,
-        action: activityLogs.action,
-        details: activityLogs.details,
-        createdAt: activityLogs.createdAt,
-        lastActive: sql<string>`(
-          SELECT MAX(created_at)
-          FROM ${activityLogs}
-          WHERE user_id = ${activityLogs.userId}
-        )`,
-        status: sql<'active' | 'inactive'>`CASE
-          WHEN MAX(${activityLogs.createdAt}) > NOW() - INTERVAL '5 minutes'
-          THEN 'active'
-          ELSE 'inactive'
-        END`,
-      })
-      .from(activityLogs)
-      .innerJoin(users, eq(activityLogs.userId, users.id))
-      .where(finalWhereClause)
-      .groupBy(activityLogs.id, users.id)
-      .orderBy(activityLogs.createdAt);
+    // Get user details for each log
+    const logs = await Promise.all(logsResult.documents.map(async (log) => {
+      let user = null;
+      try {
+        user = await databases.getDocument(
+          fullConfig.databaseId,
+          fullConfig.usersCollectionId,
+          log.userId
+        );
+      } catch (error) {
+        // User not found
+      }
 
-    return NextResponse.json({ logs: results });
+      // Determine if user is active (activity in last 5 minutes)
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const status = log.createdAt > fiveMinutesAgo ? 'active' : 'inactive';
+
+      return {
+        id: log.$id,
+        userId: log.userId,
+        name: user ? user.fullName : 'Unknown',
+        email: user ? user.email : 'unknown@example.com',
+        action: log.type || log.action,
+        details: log.description || log.details,
+        createdAt: log.createdAt,
+        lastActive: log.createdAt,
+        status
+      };
+    }));
+
+    return NextResponse.json({ logs });
   } catch (error) {
     console.error('Error fetching activity logs:', error);
     return NextResponse.json(
@@ -86,53 +97,64 @@ export async function GET(request: Request) {
   }
 }
 
-export async function DELETE(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Forbidden' }, { status: 403 });
+    }
 
-    const logId = parseInt(params.id);
+    const { databases } = await createAdminClient();
+    
+    // Extract logId from request
+    const { searchParams } = new URL(request.url);
+    const logId = searchParams.get('id');
+    
+    if (!logId) {
+      return NextResponse.json(
+        { message: 'Log ID is required' },
+        { status: 400 }
+      );
+    }
 
-    // Check if the log is for an inactive user (no activity in the last 7 days)
-    const log = await db
-      .select({
-        lastActive: sql<string>`MAX(created_at)`,
-      })
-      .from(activityLogs)
-      .where(eq(activityLogs.id, sql`${logId.toString()}::uuid`))
-      .groupBy(activityLogs.id)
-      .limit(1);
-
-    if (!log.length) {
+    // Get the log
+    try {
+      const log = await databases.getDocument(
+        fullConfig.databaseId,
+        'activity_logs',
+        logId
+      );
+      
+      // Check if log is for inactive user (no activity in last 7 days)
+      const sevenDaysAgo = subDays(new Date(), 7).toISOString();
+      
+      if (log.createdAt > sevenDaysAgo) {
+        return NextResponse.json(
+          { message: 'Cannot delete logs for active users' },
+          { status: 400 }
+        );
+      }
+      
+      // Delete the log
+      await databases.deleteDocument(
+        fullConfig.databaseId,
+        'activity_logs',
+        logId
+      );
+      
+      return NextResponse.json({ message: 'Activity log deleted successfully' });
+    } catch (error) {
       return NextResponse.json(
         { message: 'Activity log not found' },
         { status: 404 }
       );
     }
-
-    const lastActive = new Date(log[0].lastActive);
-    const sevenDaysAgo = subDays(new Date(), 7);
-
-    if (lastActive > sevenDaysAgo) {
-      return NextResponse.json(
-        { message: 'Cannot delete logs for active users' },
-        { status: 400 }
-      );
-    }
-
-    await db
-      .delete(activityLogs)
-      .where(eq(activityLogs.id, sql`${logId.toString()}::uuid`));
-
-    return NextResponse.json({ message: 'Activity log deleted successfully' });
   } catch (error) {
     console.error('Error deleting activity log:', error);
     return NextResponse.json(

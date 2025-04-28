@@ -1,23 +1,27 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { activityLogs, users } from '@/server/db/schema/schema';
-import { eq, gte, sql } from 'drizzle-orm';
-import { account } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 import { subDays } from 'date-fns';
 import { Parser } from 'json2csv';
 
 export async function GET(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Forbidden' }, { status: 403 });
+    }
 
+    const { databases } = await createAdminClient();
     const { searchParams } = new URL(request.url);
     const timeRange = searchParams.get('timeRange') || '24h';
 
@@ -35,32 +39,54 @@ export async function GET(request: Request) {
         startDate = subDays(now, 1);
     }
 
-    // Fetch activity logs with user information
-    const logs = await db
-      .select({
-        id: activityLogs.id,
-        userId: activityLogs.userId,
-        name: users.name,
-        email: users.email,
-        action: activityLogs.action,
-        details: activityLogs.details,
-        createdAt: activityLogs.createdAt,
-        lastActive: sql<string>`(
-          SELECT MAX(created_at)
-          FROM ${activityLogs}
-          WHERE user_id = ${activityLogs.userId}
-        )`,
-        status: sql<'active' | 'inactive'>`CASE
-          WHEN MAX(${activityLogs.createdAt}) > NOW() - INTERVAL '5 minutes'
-          THEN 'active'
-          ELSE 'inactive'
-        END`,
+    // Fetch activity logs
+    const logsResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      'activity_logs',
+      [
+        Query.greaterThanEqual('createdAt', startDate.toISOString()),
+        Query.orderDesc('createdAt'),
+        Query.limit(1000) // Adjust limit as needed
+      ]
+    );
+    
+    // Process logs and get user information
+    const processedLogs = await Promise.all(
+      logsResult.documents.map(async (log) => {
+        let userName = 'Unknown';
+        let userEmail = 'unknown@example.com';
+        
+        try {
+          if (log.userId) {
+            const user = await databases.getDocument(
+              fullConfig.databaseId,
+              fullConfig.usersCollectionId,
+              log.userId
+            );
+            userName = user.fullName || 'Unknown';
+            userEmail = user.email || 'unknown@example.com';
+          }
+        } catch (error) {
+          // User not found, use defaults
+        }
+        
+        // Determine if user is active in the last 5 minutes
+        const lastActive = log.createdAt;
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const status = lastActive > fiveMinutesAgo ? 'active' : 'inactive';
+        
+        return {
+          id: log.$id,
+          name: userName,
+          email: userEmail,
+          action: log.type || 'unknown',
+          details: log.description || '',
+          createdAt: log.createdAt,
+          lastActive: lastActive,
+          status: status
+        };
       })
-      .from(activityLogs)
-      .innerJoin(users, eq(activityLogs.userId, users.id))
-      .where(gte(activityLogs.createdAt, startDate))
-      .groupBy(activityLogs.id, users.id)
-      .orderBy(activityLogs.createdAt);
+    );
 
     // Convert logs to CSV format
     const fields = [
@@ -75,7 +101,7 @@ export async function GET(request: Request) {
     ];
 
     const json2csvParser = new Parser({ fields });
-    const csv = json2csvParser.parse(logs);
+    const csv = json2csvParser.parse(processedLogs);
 
     // Return CSV file
     return new NextResponse(csv, {

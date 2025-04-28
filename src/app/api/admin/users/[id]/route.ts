@@ -1,31 +1,49 @@
+'use server';
+
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db/db';
-import { users } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth/auth-options';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
 
 export async function PATCH(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.role || session.user.role !== 'admin') {
+    // First perform a truly asynchronous operation
+    const currentUser = await getCurrentUser();
+    
+    // Now it's safe to use params
+    const userId = params.id;
+    
+    if (!currentUser) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
     const { role, status } = await request.json();
-    const userId = params.id;
+    
+    const { databases } = await createAdminClient();
 
-    // Update user role and/or status
-    await db
-      .update(users)
-      .set({
-        ...(role && { role }),
-        ...(status && { status }),
-      })
-      .where(eq(users.id, userId));
+    // Update user data
+    const updatedData: Record<string, any> = {
+      updatedAt: new Date().toISOString()
+    };
+    
+    if (role) updatedData.role = role;
+    if (status) updatedData.status = status;
+    
+    // Update user in Appwrite
+    await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      userId,
+      updatedData
+    );
 
     return NextResponse.json({ message: 'User updated successfully' });
   } catch (error) {
@@ -42,18 +60,33 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.role || session.user.role !== 'admin') {
+    // First perform a truly asynchronous operation
+    const currentUser = await getCurrentUser();
+    
+    // Now it's safe to use params
+    const userId = params.id;
+    
+    if (!currentUser) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
-    const userId = params.id;
+    const { databases } = await createAdminClient();
 
     // Soft delete user by setting status to 'deleted'
-    await db
-      .update(users)
-      .set({ status: 'deleted' })
-      .where(eq(users.id, userId));
+    await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      userId,
+      { 
+        status: 'deleted',
+        updatedAt: new Date().toISOString()
+      }
+    );
 
     return NextResponse.json({ message: 'User deleted successfully' });
   } catch (error) {

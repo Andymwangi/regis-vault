@@ -1,52 +1,60 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { departments, files, users } from '@/server/db/schema/schema';
-import { eq, sql } from 'drizzle-orm';
-import { account } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 
 export async function GET(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    const departmentId = params.id;
+    if (!departmentId) {
+      return new Response('Department ID is required', { status: 400 });
     }
 
-    const departmentId = params.id;
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return new Response('Unauthorized', { status: 401 });
+    }
 
-    const results = await db
-      .select({
-        id: files.id,
-        name: files.name,
-        type: files.type,
-        size: files.size,
-        url: files.url,
-        createdAt: files.createdAt,
-        updatedAt: files.updatedAt,
-        owner: {
-          id: users.id,
-          name: users.name,
-          email: users.email,
-        },
-      })
-      .from(files)
-      .innerJoin(users, eq(files.userId, sql`${users.id}::uuid`))
-      .where(eq(files.departmentId, sql`${departmentId}::uuid`))
-      .orderBy(files.updatedAt);
+    const { databases } = await createAdminClient();
+    
+    // Query files that are associated with this department
+    const filesResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      [
+        Query.equal('departmentId', [departmentId]),
+        Query.equal('status', ['active']),
+        Query.limit(100),
+      ]
+    );
 
-    return NextResponse.json({ files: results });
+    // Format the file data for the frontend
+    const files = filesResult.documents.map(file => ({
+      id: file.$id,
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      url: file.url,
+      thumbnailUrl: file.thumbnailUrl || null,
+      createdAt: file.$createdAt,
+      updatedAt: file.$updatedAt,
+      owner: {
+        id: file.ownerId,
+        name: file.ownerName || "Unknown",
+      },
+      bucketFileId: file.bucketFileId || file.bucketFieldId,
+      departmentId: file.departmentId,
+    }));
+
+    return NextResponse.json({ files });
   } catch (error) {
     console.error('Error fetching department files:', error);
-    return NextResponse.json(
-      { message: 'Internal server error' },
-      { status: 500 }
-    );
+    return new Response('Failed to fetch department files', { status: 500 });
   }
 } 

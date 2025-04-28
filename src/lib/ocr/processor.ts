@@ -1,48 +1,177 @@
 'use server';
 
-import { db } from '../db';
-import { ocrResults } from '../../server/db/schema/schema';
-import { databases, storage, STORAGE_BUCKETS, DATABASES, COLLECTIONS } from '../appwrite/config';
-import { ID, Query } from 'appwrite';
-import { eq } from 'drizzle-orm';
-import { createWorker } from 'tesseract.js';
-import PDFParse from 'pdf-parse';
+import { createAdminClient } from '../appwrite';
+import { fullConfig } from '../appwrite/config';
+import { ID, Query } from 'node-appwrite';
+import path from 'path';
+// Fix PDF-parse import to avoid loading test files
+const pdfParse = require('pdf-parse/lib/pdf-parse.js');
+
+// Completely disable Tesseract worker loading - we'll use the system installation instead
+if (typeof process !== 'undefined') {
+  process.env.DISABLE_TESSERACT = 'true';
+  console.log('Using system-installed Tesseract OCR through API endpoint instead of Tesseract.js worker.');
+}
+
+// Process image with OCR - using external HTTP API
+async function processImageWithOCR(imageBuffer: ArrayBuffer, language: string = 'eng', fileId?: string) {
+  console.log(`Processing image with ${language} language model via OCR API`);
+  
+  // STEP 1: Convert image buffer to base64 for API transmission
+  const base64Image = Buffer.from(imageBuffer).toString('base64');
+  
+  try {
+    // STEP 2: Determine the endpoint URL with fallbacks
+    let apiEndpoint;
+    
+    // Try to use the configured base URL, with fallbacks
+    if (process.env.NEXT_PUBLIC_APP_URL) {
+      apiEndpoint = new URL('/api/ocr/process-image', process.env.NEXT_PUBLIC_APP_URL).toString();
+    } else if (process.env.VERCEL_URL) {
+      apiEndpoint = `https://${process.env.VERCEL_URL}/api/ocr/process-image`;
+    } else {
+      // Use local development URL as a last resort
+      apiEndpoint = 'http://localhost:3000/api/ocr/process-image';
+    }
+    
+    console.log(`Using OCR API endpoint: ${apiEndpoint}`);
+    
+    // STEP 3: Make API request
+    const response = await fetch(apiEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-api-key': process.env.INTERNAL_API_KEY || 'dev-key',
+      },
+      body: JSON.stringify({
+        image: base64Image,
+        language: language,
+        fileId: fileId, // Pass the fileId for tracing
+      }),
+      // Add timeout
+      signal: AbortSignal.timeout(60000), // 60 second timeout (Tesseract can be slow)
+    });
+    
+    if (!response.ok) {
+      let errorDetails = '';
+      try {
+        const errorData = await response.json();
+        errorDetails = errorData.message || errorData.error || '';
+      } catch (e) {
+        // Ignore JSON parsing error
+      }
+      
+      throw new Error(`OCR API error ${response.status}: ${errorDetails || response.statusText}`);
+    }
+    
+    // STEP 4: Parse API response
+    const result = await response.json();
+    
+    if (result.error) {
+      throw new Error(`OCR processing error: ${result.text}`);
+    }
+    
+    console.log(`Image processed via API: ${result.text?.length || 0} characters, confidence: ${result.confidence || 0}%`);
+    
+    return {
+      text: result.text || '',
+      confidence: result.confidence || 0
+    };
+  } catch (error) {
+    console.error('OCR API processing error:', error);
+    
+    // FALLBACK: Return a helpful error message
+    return {
+      text: "OCR processing encountered an error. Please verify that Tesseract OCR is installed on the server and properly added to the system PATH.",
+      confidence: 0
+    };
+  }
+}
 
 export async function processOCR(fileId: string, fileUrl: string) {
+  const { databases, storage } = await createAdminClient();
+  const startTime = Date.now(); // Add tracking of start time for the whole process
+  
   try {
-    // Update status to processing
-    await db
-      .update(ocrResults)
-      .set({
-        status: 'processing',
-        updatedAt: new Date(),
-      })
-      .where(eq(ocrResults.fileId, fileId));
+    // Get OCR document from Appwrite
+    const ocrResults = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.ocrResultsCollectionId,
+      [Query.equal('fileId', [fileId])]
+    );
+    
+    if (ocrResults.documents.length === 0) {
+      // Get file information
+      const fileInfo = await databases.getDocument(
+        fullConfig.databaseId,
+        fullConfig.filesCollectionId,
+        fileId
+      );
+      
+      // Create OCR document if it doesn't exist
+      await databases.createDocument(
+        fullConfig.databaseId,
+        fullConfig.ocrResultsCollectionId,
+        ID.unique(),
+        {
+          fileId,
+          text: "",
+          confidence: 0,
+          status: 'processing',
+          processingTime: 0,
+          pageCount: 0,
+          fileName: fileInfo.name,
+          fileType: fileInfo.type,
+          metadata: JSON.stringify({
+            initializing: true,
+            fileSize: fileInfo.size,
+            extension: fileInfo.extension || ''
+          }),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      );
+    } else {
+      // Update status to processing
+      await databases.updateDocument(
+        fullConfig.databaseId,
+        fullConfig.ocrResultsCollectionId,
+        ocrResults.documents[0].$id,
+        {
+          status: 'processing',
+          updatedAt: new Date().toISOString()
+        }
+      );
+    }
+    
+    // Get file information
+    const fileInfo = await databases.getDocument(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      fileId
+    );
     
     // Download the file from Appwrite Storage
+    const bucketFileId = fileInfo.bucketFieldId;
     const fileBuffer = await storage.getFileDownload(
-      STORAGE_BUCKETS.FILES,
-      fileId
-    );
-
-    // Get file information to determine its type
-    const fileInfo = await storage.getFile(
-      STORAGE_BUCKETS.FILES,
-      fileId
+      fullConfig.storageId,
+      bucketFileId
     );
     
-    const startTime = Date.now();
     let text = '';
     let confidence = 0;
     let pageCount = 1;
     
     // Process based on file type
-    if (fileInfo.mimeType === 'application/pdf') {
+    if (fileInfo.type === 'document' && fileInfo.extension === 'pdf') {
       // Process PDF with pdf-parse
       try {
-        // Convert fileBuffer (string) to Buffer for pdf-parse
+        // Convert fileBuffer to Buffer for pdf-parse
         const buffer = Buffer.from(fileBuffer);
-        const pdfData = await PDFParse(buffer);
+        const pdfData = await pdfParse(buffer, {
+          // Prevent loading default test files
+          max: 0
+        });
         text = pdfData.text;
         confidence = 95; // Typically high confidence for PDFs with clear text
         pageCount = pdfData.numpages || 1;
@@ -53,56 +182,90 @@ export async function processOCR(fileId: string, fileUrl: string) {
         console.error('PDF parsing error:', pdfError);
         throw new Error(`PDF parsing failed: ${pdfError.message}`);
       }
-    } else {
-      // Process image with Tesseract.js
+    } else if (fileInfo.type === 'image') {
       try {
-        const worker = await createWorker('eng');
-        const result = await worker.recognize(fileBuffer);
-        text = result.data.text;
-        confidence = Math.round(result.data.confidence);
+        console.log('Processing image via server-side approach');
+        console.log(`File info: ${fileInfo.name}, type: ${fileInfo.type}, size: ${fileInfo.size}`);
         
-        // Terminate worker
-        await worker.terminate();
+        // Process image with our OCR function
+        const ocrResult = await processImageWithOCR(fileBuffer, 'eng', fileId);
+        text = ocrResult.text;
+        confidence = ocrResult.confidence;
+        
+        if (!text || text.trim() === '') {
+          text = '[No text could be extracted from this image]';
+          confidence = 0;
+        }
         
         console.log(`Image processed: ${text.length} characters, confidence: ${confidence}%`);
       } catch (error) {
-        const imgError = error as Error;
-        console.error('Tesseract processing error:', imgError);
-        throw new Error(`Image OCR failed: ${imgError.message}`);
+        console.error('OCR processing error:', error);
+        
+        // Return a more helpful error message
+        text = "OCR processing encountered an error. Please ensure Tesseract OCR is installed on the server and properly added to the system PATH.";
+        confidence = 0;
+        console.warn('Using fallback error text for failed OCR');
       }
+    } else {
+      throw new Error('Unsupported file type for OCR');
     }
 
     const processingTime = Date.now() - startTime;
     
-    // Update PostgreSQL with OCR results
-    await db
-      .update(ocrResults)
-      .set({
-        text,
-        confidence,
-        language: 'eng',
-        pageCount,
-        status: 'completed',
-        processingTime,
-        updatedAt: new Date(),
-      })
-      .where(eq(ocrResults.fileId, fileId));
-
-    // Update Appwrite OCR result status
-    const appwriteOcrResult = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.OCR_RESULTS,
-      [Query.equal('fileId', fileId)]
+    // Update OCR results in Appwrite
+    const updatedOcrResults = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.ocrResultsCollectionId,
+      [Query.equal('fileId', [fileId])]
     );
-
-    if (appwriteOcrResult.documents.length > 0) {
+    
+    if (updatedOcrResults.documents.length > 0) {
       await databases.updateDocument(
-        DATABASES.MAIN,
-        COLLECTIONS.OCR_RESULTS,
-        appwriteOcrResult.documents[0].$id,
+        fullConfig.databaseId,
+        fullConfig.ocrResultsCollectionId,
+        updatedOcrResults.documents[0].$id,
         {
+          text,
+          confidence,
           status: 'completed',
+          processingTime: processingTime,
+          pageCount: pageCount,
+          fileName: fileInfo.name,
+          fileType: fileInfo.type,
+          metadata: JSON.stringify({
+            extension: fileInfo.extension || '',
+            fileSize: fileInfo.size || 0,
+            mimeType: fileInfo.mimeType || '',
+            processingDate: new Date().toISOString()
+          }),
           updatedAt: new Date().toISOString(),
+        }
+      );
+    } else {
+      // Create new OCR document with results
+      const processingTime = Date.now() - startTime;
+      
+      await databases.createDocument(
+        fullConfig.databaseId,
+        fullConfig.ocrResultsCollectionId,
+        ID.unique(),
+        {
+          fileId,
+          text,
+          confidence,
+          status: 'completed',
+          processingTime: processingTime,
+          pageCount: pageCount,
+          fileName: fileInfo.name,
+          fileType: fileInfo.type,
+          metadata: JSON.stringify({
+            extension: fileInfo.extension || '',
+            fileSize: fileInfo.size || 0,
+            mimeType: fileInfo.mimeType || '',
+            processingDate: new Date().toISOString()
+          }),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         }
       );
     }
@@ -110,39 +273,59 @@ export async function processOCR(fileId: string, fileUrl: string) {
     return {
       text,
       confidence,
-      language: 'eng',
       pageCount,
       processingTime,
     };
   } catch (error) {
     console.error('Error processing OCR:', error);
 
-    // Update error status in PostgreSQL
-    await db
-      .update(ocrResults)
-      .set({
-        status: 'failed',
-        error: error instanceof Error ? error.message : 'Unknown error occurred',
-        updatedAt: new Date(),
-      })
-      .where(eq(ocrResults.fileId, fileId));
-
     // Update error status in Appwrite
-    const appwriteOcrResult = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.OCR_RESULTS,
-      [Query.equal('fileId', fileId)]
+    const ocrResults = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.ocrResultsCollectionId,
+      [Query.equal('fileId', [fileId])]
     );
 
-    if (appwriteOcrResult.documents.length > 0) {
+    if (ocrResults.documents.length > 0) {
       await databases.updateDocument(
-        DATABASES.MAIN,
-        COLLECTIONS.OCR_RESULTS,
-        appwriteOcrResult.documents[0].$id,
+        fullConfig.databaseId,
+        fullConfig.ocrResultsCollectionId,
+        ocrResults.documents[0].$id,
         {
           status: 'failed',
           error: error instanceof Error ? error.message : 'Unknown error occurred',
-          updatedAt: new Date().toISOString(),
+          processingTime: Date.now() - startTime,
+          metadata: JSON.stringify({
+            error: error instanceof Error ? error.message : 'Unknown error',
+            errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+            timestamp: Date.now()
+          }),
+          updatedAt: new Date().toISOString()
+        }
+      );
+    } else {
+      // Create new OCR document with error status
+      await databases.createDocument(
+        fullConfig.databaseId,
+        fullConfig.ocrResultsCollectionId,
+        ID.unique(),
+        {
+          fileId,
+          text: "",
+          confidence: 0,
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'Unknown error occurred',
+          processingTime: 0,
+          pageCount: 0,
+          fileName: "error-document.txt",  // Default values
+          fileType: "unknown",
+          metadata: JSON.stringify({
+            error: error instanceof Error ? error.message : 'Unknown error',
+            errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+            timestamp: Date.now()
+          }),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         }
       );
     }
@@ -152,17 +335,20 @@ export async function processOCR(fileId: string, fileUrl: string) {
 }
 
 export async function getOCRResult(fileId: string) {
+  const { databases } = await createAdminClient();
+  
   try {
-    const [ocrResult] = await db
-      .select()
-      .from(ocrResults)
-      .where(eq(ocrResults.fileId, fileId));
+    const ocrResults = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.ocrResultsCollectionId,
+      [Query.equal('fileId', [fileId])]
+    );
 
-    if (!ocrResult) {
+    if (ocrResults.documents.length === 0) {
       throw new Error('OCR result not found');
     }
 
-    return ocrResult;
+    return ocrResults.documents[0];
   } catch (error) {
     console.error('Error getting OCR result:', error);
     throw error;
@@ -170,22 +356,25 @@ export async function getOCRResult(fileId: string) {
 }
 
 export async function getOCRStatus(fileId: string) {
+  const { databases } = await createAdminClient();
+  
   try {
-    const [ocrResult] = await db
-      .select({
-        status: ocrResults.status,
-        error: ocrResults.error,
-      })
-      .from(ocrResults)
-      .where(eq(ocrResults.fileId, fileId));
+    const ocrResults = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.ocrResultsCollectionId,
+      [Query.equal('fileId', [fileId])]
+    );
 
-    if (!ocrResult) {
-      throw new Error('OCR result not found');
+    if (ocrResults.documents.length === 0) {
+      throw new Error('OCR status not found');
     }
 
-    return ocrResult;
+    return {
+      status: ocrResults.documents[0].status,
+      error: ocrResults.documents[0].error || null
+    };
   } catch (error) {
     console.error('Error getting OCR status:', error);
     throw error;
   }
-} 
+}

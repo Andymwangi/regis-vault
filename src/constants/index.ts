@@ -1,0 +1,1 @@
+export const avatarPlaceholderUrl = "https://ui-avatars.com/api/?name=User&background=random"; 

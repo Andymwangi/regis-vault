@@ -1,50 +1,44 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { files, departments, fileTags } from '@/server/db/schema/schema';
-import { eq, sql } from 'drizzle-orm';
-import { account } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { Query } from 'node-appwrite';
+import { getCurrentUser } from '@/lib/actions/user.actions';
 
 export async function GET(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Fetch files with their departments and tags
-    const filesList = await db
-      .select({
-        id: files.id,
-        name: files.name,
-        type: files.type,
-        department: departments.name,
-        lastModified: files.updatedAt,
-      })
-      .from(files)
-      .leftJoin(departments, eq(files.departmentId, departments.id))
-      .where(eq(files.status, 'active'))
-      .orderBy(files.updatedAt);
+    const { databases } = await createAdminClient();
+
+    // Fetch files 
+    const filesList = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      [Query.equal('status', ['active']), Query.orderDesc('updatedAt')]
+    );
 
     // Fetch tags for each file
     const filesWithTags = await Promise.all(
-      filesList.map(async (file) => {
-        const tags = await db
-          .select({
-            tag: fileTags.tag,
-            category: fileTags.category,
-            confidence: fileTags.confidence,
-          })
-          .from(fileTags)
-          .where(eq(fileTags.fileId, file.id));
+      filesList.documents.map(async (file) => {
+        const tagsResult = await databases.listDocuments(
+          fullConfig.databaseId,
+          fullConfig.documentTagsCollectionId,
+          [Query.equal('fileId', [file.$id])]
+        );
 
         return {
-          ...file,
-          tags: tags.map(t => t.tag),
+          id: file.$id,
+          name: file.name,
+          type: file.type,
+          department: file.departmentId || '',
+          lastModified: file.updatedAt,
+          tags: tagsResult.documents.map(t => t.tag)
         };
       })
     );
@@ -67,29 +61,46 @@ interface TagInput {
 
 export async function POST(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { fileId, tags } = await request.json();
+    const { databases } = await createAdminClient();
 
     // Delete existing tags
-    await db.delete(fileTags)
-      .where(eq(fileTags.fileId, fileId));
+    const existingTags = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.documentTagsCollectionId,
+      [Query.equal('fileId', [fileId])]
+    );
+
+    // Delete each tag document
+    for (const tag of existingTags.documents) {
+      await databases.deleteDocument(
+        fullConfig.databaseId,
+        fullConfig.documentTagsCollectionId,
+        tag.$id
+      );
+    }
 
     // Insert new tags
     if (tags.length > 0) {
-      await db.insert(fileTags)
-        .values(tags.map((tag: TagInput) => ({
-          fileId,
-          tag: tag.tag,
-          category: tag.category,
-          confidence: tag.confidence
-        })));
+      for (const tag of tags) {
+        await databases.createDocument(
+          fullConfig.databaseId,
+          fullConfig.documentTagsCollectionId,
+          'unique()',
+          {
+            fileId,
+            tag: tag.tag,
+            category: tag.category,
+            confidence: tag.confidence || 0
+          }
+        );
+      }
     }
 
     return NextResponse.json({ message: 'Tags updated successfully' });

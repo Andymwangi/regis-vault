@@ -1,14 +1,13 @@
 'use server';
 
 import { NextRequest, NextResponse } from 'next/server';
-import { Query } from 'appwrite';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
-import { db } from '@/lib/db';
-import { files } from '@/server/db/schema/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 
 const FILE_TYPES = {
-  document: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  document: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'],
   image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
   spreadsheet: ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
   other: []
@@ -16,103 +15,63 @@ const FILE_TYPES = {
 
 export async function GET(request: NextRequest) {
   try {
-    // Get the current user using Appwrite
-    const currentUser = await account.get();
-    
+    // Get the current user
+    const currentUser = await getCurrentUser();
     if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
     
-    // Get user profile data
-    const userProfiles = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
+    const { databases } = await createAdminClient();
+    
+    // Get all user files from Appwrite
+    const userFiles = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
       [
-        Query.equal('userId', sanitizeUserId(currentUser.$id))
+        Query.equal('ownerId', [currentUser.$id]),
+        Query.equal('status', ['active'])
       ]
     );
     
-    if (userProfiles.documents.length === 0) {
-      return NextResponse.json({ message: 'User profile not found' }, { status: 404 });
-    }
+    // Calculate statistics
+    let totalSize = 0;
+    let documentSize = 0;
+    let imageSize = 0;
+    let spreadsheetSize = 0;
+    let otherSize = 0;
     
-    const userProfile = userProfiles.documents[0];
-
-    // Get total size of all files
-    const totalSize = await db
-      .select({ 
-        size: sql<number>`sum(${files.size})` 
-      })
-      .from(files)
-      .where(
-        and(
-          eq(files.userId, currentUser.$id),
-          eq(files.status, 'active')
-        )
-      );
-
-    // Get sizes by file types using the helper function
-    const documentSize = await getFileSizeByTypes(currentUser.$id, FILE_TYPES.document);
-    const imageSize = await getFileSizeByTypes(currentUser.$id, FILE_TYPES.image);
-    const spreadsheetSize = await getFileSizeByTypes(currentUser.$id, FILE_TYPES.spreadsheet);
-    const otherSize = await getFileSizeByTypes(currentUser.$id, FILE_TYPES.other, true);
-
-    const totalGB = 20; // 20GB total storage limit
-    const usedBytes = totalSize[0]?.size || 0;
-    const usedGB = bytesToGB(usedBytes);
-
-    // Also get statistics from Appwrite storage for files not yet in Postgres
-    let appwriteStats = {
-      totalSize: 0,
-      document: 0,
-      image: 0,
-      spreadsheet: 0,
-      other: 0
-    };
-    
-    try {
-      // Get the user's files from Appwrite
-      const appwriteFiles = await databases.listDocuments(
-        DATABASES.MAIN,
-        COLLECTIONS.FILES_METADATA,
-        [
-          Query.equal('user_id', currentUser.$id)
-        ]
-      );
+    for (const file of userFiles.documents) {
+      const size = file.size || 0;
+      totalSize += size;
       
-      // Calculate statistics
-      for (const file of appwriteFiles.documents) {
-        appwriteStats.totalSize += file.file_size || 0;
-        
-        if (FILE_TYPES.document.includes(file.file_type)) {
-          appwriteStats.document += file.file_size || 0;
-        } else if (FILE_TYPES.image.includes(file.file_type)) {
-          appwriteStats.image += file.file_size || 0;
-        } else if (FILE_TYPES.spreadsheet.includes(file.file_type)) {
-          appwriteStats.spreadsheet += file.file_size || 0;
-        } else {
-          appwriteStats.other += file.file_size || 0;
-        }
+      // Categorize by file type
+      if (file.type === 'document') {
+        documentSize += size;
+      } else if (file.type === 'image') {
+        imageSize += size;
+      } else if (file.extension === 'xls' || file.extension === 'xlsx') {
+        spreadsheetSize += size;
+      } else {
+        otherSize += size;
       }
-    } catch (error) {
-      console.error('Error fetching Appwrite storage stats:', error);
-      // Continue even if Appwrite stats fail
     }
-
-    // Combine Postgres and Appwrite stats
-    const combinedStats = {
+    
+    const totalGB = 20; // 20GB total storage limit
+    const usedGB = bytesToGB(totalSize);
+    
+    const stats = {
       totalStorage: totalGB,
-      usedStorage: usedGB + bytesToGB(appwriteStats.totalSize),
-      available: totalGB - (usedGB + bytesToGB(appwriteStats.totalSize)),
+      usedStorage: usedGB,
+      available: totalGB - usedGB,
       fileTypes: {
-        document: bytesToGB(documentSize + appwriteStats.document),
-        image: bytesToGB(imageSize + appwriteStats.image),
-        spreadsheet: bytesToGB(spreadsheetSize + appwriteStats.spreadsheet),
-        other: bytesToGB(otherSize + appwriteStats.other),
+        document: bytesToGB(documentSize),
+        image: bytesToGB(imageSize),
+        spreadsheet: bytesToGB(spreadsheetSize),
+        other: bytesToGB(otherSize),
       },
     };
 
-    return NextResponse.json(combinedStats);
+    return NextResponse.json(stats);
   } catch (error) {
     console.error('Error fetching storage stats:', error);
     return NextResponse.json(
@@ -120,27 +79,6 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
-
-// Helper function to get file size by types
-async function getFileSizeByTypes(userId: string, types: string[], isOther = false) {
-  const query = db
-    .select({ 
-      size: sql<number>`sum(${files.size})` 
-    })
-    .from(files)
-    .where(
-      and(
-        eq(files.userId, userId),
-        eq(files.status, 'active'),
-        isOther 
-          ? sql`${files.type} NOT IN (${FILE_TYPES.document.concat(FILE_TYPES.image, FILE_TYPES.spreadsheet)})`
-          : sql`${files.type} IN (${types})`
-      )
-    );
-
-  const result = await query;
-  return result[0]?.size || 0;
 }
 
 // Convert bytes to GB

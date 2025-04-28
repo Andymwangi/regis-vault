@@ -1,11 +1,10 @@
 'use server';
 
 import { NextRequest, NextResponse } from 'next/server';
-import { Query } from 'appwrite';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
-import { db } from '@/lib/db';
-import { users } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 import { z } from 'zod';
 
 const updateProfileSchema = z.object({
@@ -14,30 +13,13 @@ const updateProfileSchema = z.object({
 
 export async function PUT(request: NextRequest) {
   try {
-    // Get the current user using Appwrite
-    let currentUser;
-    let userProfile;
-    
-    try {
-      currentUser = await account.get();
-      
-      // Get user profile data
-      const userProfiles = await databases.listDocuments(
-        DATABASES.MAIN,
-        COLLECTIONS.DEPARTMENTS,
-        [
-          Query.equal('userId', sanitizeUserId(currentUser.$id))
-        ]
-      );
-      
-      if (userProfiles.documents.length === 0) {
-        return NextResponse.json({ message: 'User profile not found' }, { status: 404 });
-      }
-      
-      userProfile = userProfiles.documents[0];
-    } catch (error) {
+    // Get the current user
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
+    
+    const { databases } = await createAdminClient();
 
     const body = await request.json();
     const result = updateProfileSchema.safeParse(body);
@@ -51,28 +33,22 @@ export async function PUT(request: NextRequest) {
 
     const { name } = result.data;
 
-    // Update in PostgreSQL
-    const [updatedUser] = await db
-      .update(users)
-      .set({
-        name,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, currentUser.$id))
-      .returning();
-      
-    // Also update in Appwrite
-    await databases.updateDocument(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      userProfile.$id,
+    // Update in Appwrite
+    const updatedUser = await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      currentUser.$id,
       {
-        name,
+        fullName: name,
         updatedAt: new Date().toISOString(),
       }
     );
 
-    return NextResponse.json(updatedUser);
+    return NextResponse.json({
+      id: updatedUser.$id,
+      name: updatedUser.fullName,
+      updatedAt: updatedUser.updatedAt
+    });
   } catch (error) {
     console.error('Error updating profile:', error);
     return NextResponse.json(

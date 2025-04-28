@@ -18,6 +18,8 @@ import { Search, Users, Building2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { File } from '@/types/file';
+import { shareFileBridge } from '@/lib/bridge/file-bridge';
+import { Switch } from '@/components/ui/switch';
 
 interface User {
   id: string;
@@ -31,6 +33,7 @@ interface User {
 interface Department {
   id: string;
   name: string;
+  description?: string;
 }
 
 interface ShareDialogProps {
@@ -48,6 +51,7 @@ export function ShareDialog({ open, onOpenChange, file, onShareComplete }: Share
   const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
   const [role, setRole] = useState<'viewer' | 'editor' | 'admin'>('viewer');
   const [loading, setLoading] = useState(false);
+  const [shareAsDepartment, setShareAsDepartment] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -61,9 +65,15 @@ export function ShareDialog({ open, onOpenChange, file, onShareComplete }: Share
       const response = await fetch('/api/users');
       if (!response.ok) throw new Error('Failed to fetch users');
       const data = await response.json();
-      setUsers(data.users);
+      if (data && data.users) {
+        setUsers(data.users);
+      } else {
+        console.error('Unexpected response format from users API:', data);
+        setUsers([]);
+      }
     } catch (error) {
       console.error('Error fetching users:', error);
+      setUsers([]);
       toast.error('Failed to fetch users');
     }
   };
@@ -71,11 +81,18 @@ export function ShareDialog({ open, onOpenChange, file, onShareComplete }: Share
   const fetchDepartments = async () => {
     try {
       const response = await fetch('/api/departments');
-      if (!response.ok) throw new Error('Failed to fetch departments');
+      if (!response.ok) throw new Error(`Failed to fetch departments: ${response.status}`);
+      
       const data = await response.json();
-      setDepartments(data.departments);
+      if (data && Array.isArray(data.departments)) {
+        setDepartments(data.departments);
+      } else {
+        console.error('Unexpected departments response format:', data);
+        setDepartments([]);
+      }
     } catch (error) {
       console.error('Error fetching departments:', error);
+      setDepartments([]);
       toast.error('Failed to fetch departments');
     }
   };
@@ -85,18 +102,13 @@ export function ShareDialog({ open, onOpenChange, file, onShareComplete }: Share
 
     try {
       setLoading(true);
-      const response = await fetch(`/api/files/${file.id}/share`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          users: selectedUsers,
-          departments: selectedDepartments,
-          role,
-        }),
+      await shareFileBridge(file.id, {
+        users: selectedUsers,
+        departments: selectedDepartments,
+        role,
+        shareAsDepartment
       });
 
-      if (!response.ok) throw new Error('Failed to share file');
-      
       toast.success('File shared successfully');
       onShareComplete();
     } catch (error) {
@@ -142,54 +154,79 @@ export function ShareDialog({ open, onOpenChange, file, onShareComplete }: Share
 
             <ScrollArea className="h-[300px] rounded-md border p-4">
               <div className="space-y-4">
-                {users
-                  .filter(user => 
-                    user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    user.email.toLowerCase().includes(searchQuery.toLowerCase())
-                  )
-                  .map(user => (
-                    <div key={user.id} className="flex items-center space-x-2">
-                      <Checkbox
-                        id={user.id}
-                        checked={selectedUsers.includes(user.id)}
-                        onCheckedChange={(checked) => {
-                          if (checked) {
-                            setSelectedUsers(prev => [...prev, user.id]);
-                          } else {
-                            setSelectedUsers(prev => prev.filter(id => id !== user.id));
-                          }
-                        }}
-                      />
-                      <Label htmlFor={user.id}>
-                        {user.name} ({user.email})
-                      </Label>
-                    </div>
-                  ))}
+                {users && users.length > 0 ? (
+                  users
+                    .filter(user => 
+                      user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      user.email.toLowerCase().includes(searchQuery.toLowerCase())
+                    )
+                    .map(user => (
+                      <div key={user.id} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={user.id}
+                          checked={selectedUsers.includes(user.id)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedUsers(prev => [...prev, user.id]);
+                            } else {
+                              setSelectedUsers(prev => prev.filter(id => id !== user.id));
+                            }
+                          }}
+                        />
+                        <Label htmlFor={user.id}>
+                          {user.name} ({user.email})
+                        </Label>
+                      </div>
+                    ))
+                ) : (
+                  <div className="text-center py-4 text-muted-foreground">
+                    No users found
+                  </div>
+                )}
               </div>
             </ScrollArea>
           </TabsContent>
 
           <TabsContent value="departments" className="space-y-4">
+            <div className="flex items-center justify-between mb-4 p-2 bg-gray-50 rounded-md">
+              <div>
+                <Label className="font-medium">Share as Department</Label>
+                <p className="text-sm text-muted-foreground">
+                  When enabled, files are shared with the department as an entity rather than with all members
+                </p>
+              </div>
+              <Switch 
+                checked={shareAsDepartment}
+                onCheckedChange={setShareAsDepartment}
+              />
+            </div>
+            
             <ScrollArea className="h-[300px] rounded-md border p-4">
               <div className="space-y-4">
-                {departments.map(dept => (
-                  <div key={dept.id} className="flex items-center space-x-2">
-                    <Checkbox
-                      id={dept.id}
-                      checked={selectedDepartments.includes(dept.id)}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          setSelectedDepartments(prev => [...prev, dept.id]);
-                        } else {
-                          setSelectedDepartments(prev => prev.filter(id => id !== dept.id));
-                        }
-                      }}
-                    />
-                    <Label htmlFor={dept.id}>
-                      {dept.name}
-                    </Label>
+                {departments && departments.length > 0 ? (
+                  departments.map(dept => (
+                    <div key={dept.id} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={dept.id}
+                        checked={selectedDepartments.includes(dept.id)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setSelectedDepartments(prev => [...prev, dept.id]);
+                          } else {
+                            setSelectedDepartments(prev => prev.filter(id => id !== dept.id));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={dept.id}>
+                        {dept.name}
+                      </Label>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-4 text-muted-foreground">
+                    No departments found
                   </div>
-                ))}
+                )}
               </div>
             </ScrollArea>
           </TabsContent>

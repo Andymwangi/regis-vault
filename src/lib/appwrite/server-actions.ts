@@ -1,171 +1,365 @@
-'use server';
+"use server";
 
-import { db } from '../../lib/db';
-import { ocrResults } from '../../server/db/schema/schema';
-import { enqueueOCRJob } from '../ocr/server-actions';
-// Import server-side Appwrite configuration
-import { databases, storage, users, DATABASES, COLLECTIONS, STORAGE_BUCKETS } from './server-config';
-import { ID, Query } from 'node-appwrite';
+import { createAdminClient, createSessionClient } from "./index";
+import { fullConfig } from "./config";
+import { ID, Query } from "node-appwrite";
+import { parseStringify } from "@/lib/utils";
+import { cookies } from "next/headers";
+import { avatarPlaceholderUrl } from "@/constants";
+import { setCookie, deleteCookie } from "./cookie-utils";
+import { v4 as uuidv4 } from "uuid";
+import { revalidatePath } from "next/cache";
+import { sendMagicLink } from "@/lib/actions/email.actions";
 
-/**
- * Server-side action to initialize OCR processing for a file
- * This includes creating the OCR record in PostgreSQL and queueing the OCR job
- */
-export async function initializeOCRProcessing(fileId: string, fileUrl: string) {
+const handleError = (error: unknown, message: string) => {
+  console.error(`${message}:`, error);
+  throw error;
+};
+
+export const createAccountServer = async (
+  email: string,
+  name: string,
+  department: string = "",
+  role: string = "user"
+) => {
+  const { account, databases } = await createAdminClient();
+  let authUser = null;
+
   try {
-    // Initialize OCR result in PostgreSQL
-    await db.insert(ocrResults).values({
-      fileId,
-      text: '',
-      confidence: 0,
-      language: '',
-      pageCount: 0,
-      status: 'pending',
-      processingTime: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    // Queue OCR job for processing
-    await enqueueOCRJob(fileId, fileUrl);
+    // Debug: Log the email being validated
+    console.log('Attempting to create account for:', email);
     
-    return true;
-  } catch (error) {
-    console.error('Error initializing OCR processing:', error);
-    throw error;
-  }
-}
+    // Basic email format check
+    if (!email || typeof email !== 'string') {
+      throw new Error('Email is required');
+    }
 
-/**
- * Server-side action to get all users (admin only)
- */
-export async function getAllUsers() {
-  try {
-    return await users.list();
-  } catch (error) {
-    console.error('Error getting all users:', error);
-    throw error;
-  }
-}
-
-/**
- * Server-side action to create a user with admin privileges
- */
-export async function createAdminUser(email: string, password: string, name: string) {
-  try {
-    // Create the user through the server SDK
-    const user = await users.create(
-      ID.unique(),
-      email,
-      undefined, // Phone
-      password,
-      name
-    );
+    // Clean the email
+    const cleanEmail = email.toLowerCase().trim();
     
-    // Add the user to the departments collection
-    const profile = await databases.createDocument(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      ID.unique(),
-      {
-        userId: user.$id,
-        name,
-        email,
-        department: 'Administration',
-        role: 'admin',
-        status: 'active',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }
-    );
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      throw new Error('Please provide a valid email address');
+    }
     
-    return { user, profile };
-  } catch (error) {
-    console.error('Error creating admin user:', error);
-    throw error;
-  }
-}
-
-/**
- * Server-side version of createAccount that uses the API key to bypass guest permissions
- * This should be called from client-side when normal account creation fails
- */
-export async function createAccountServer(email: string, password: string, name: string, department: string, role: string = 'user') {
-  console.log(`Creating server-side account for ${email} in ${department} with role ${role}`);
-  
-  try {
-    // Step 1: Check if user already exists by trying to find with same email
+    // Check if user already exists in Appwrite Auth
     try {
       const existingUsers = await databases.listDocuments(
-        DATABASES.MAIN,
-        COLLECTIONS.DEPARTMENTS,
-        [Query.equal('email', email)]
+        fullConfig.databaseId,
+        fullConfig.usersCollectionId,
+        [Query.equal("email", cleanEmail)]
       );
       
-      if (existingUsers.documents.length > 0) {
-        throw new Error('User with this email already exists');
+      if (existingUsers.total > 0) {
+        console.log('User already exists in database:', existingUsers.documents[0].$id);
+        // If user exists, send magic link and return
+        await sendMagicLink(cleanEmail, "sign-in", "/dashboard");
+        return parseStringify({ 
+          success: true, 
+          message: "User already exists, magic link sent for sign-in"
+        });
       }
     } catch (checkError) {
-      // Only throw if it's an existing user error, otherwise continue with creation
-      if (checkError instanceof Error && 
-          checkError.message.includes('already exists')) {
-        throw checkError;
-      }
-      console.log('Error while checking existing user, proceeding with creation attempt');
+      console.error('Error checking existing user:', checkError);
+      // Continue with account creation if check fails
     }
     
-    // Step 2: Create user account with server SDK (using API key)
-    console.log('Creating user account with Appwrite server SDK');
-    let newAccount;
+    // Create Appwrite account using email+name
     try {
-      newAccount = await users.create(
+      authUser = await account.create(
         ID.unique(),
-        email,
-        password,
-        name
+        cleanEmail,
+        `P@ssw0rd${Date.now()}`, // Use a proper password format
+        name.trim() // Trim whitespace from name
       );
-      console.log('User account created successfully:', newAccount.$id);
-    } catch (createError) {
-      console.error('Error creating user account:', createError);
-      throw createError;
+      console.log('Appwrite auth account created successfully:', authUser.$id);
+    } catch (authError: any) {
+      // Check if user already exists in Auth but not in database
+      if (authError.message?.includes('already exists')) {
+        console.log('User exists in Auth but not in database. Will create database record.');
+        // Try to get the user by email from Auth
+        try {
+          // We'll need to create the database document for this auth user
+          // First, get a session to retrieve the user ID
+          const session = await account.createEmailPasswordSession(
+            cleanEmail,
+            `P@ssw0rd${Date.now()}`
+          );
+          authUser = await account.get();
+          await account.deleteSessions(); // Clean up the session
+        } catch (sessionError) {
+          console.error('Error getting existing auth user:', sessionError);
+          throw new Error('User exists but unable to retrieve details');
+        }
+      } else {
+        // For other auth errors, rethrow
+        throw authError;
+      }
     }
-    
-    // Step 3: Store additional user data
-    console.log('Creating user profile in DEPARTMENTS collection');
+
+    if (!authUser) {
+      throw new Error('Failed to create or retrieve auth account');
+    }
+
+    // Create user document in database
+    let userDoc;
     try {
-      const userProfile = await databases.createDocument(
-        DATABASES.MAIN,
-        COLLECTIONS.DEPARTMENTS,
+      userDoc = await databases.createDocument(
+        fullConfig.databaseId,
+        fullConfig.usersCollectionId,
         ID.unique(),
         {
-          userId: newAccount.$id,
-          name,
-          email,
+          fullName: name.trim(),
+          email: cleanEmail,
+          avatar: avatarPlaceholderUrl,
+          accountId: authUser.$id,
           department,
           role,
-          status: 'active',
+          status: "active",
+          theme: "light",
           createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         }
       );
+      console.log('User document created successfully:', userDoc.$id);
+    } catch (dbError: any) {
+      console.error('Failed to create user document:', dbError);
       
-      console.log('User profile created successfully');
-      return { newAccount, userProfile };
-    } catch (profileError) {
-      console.error('Error creating user profile:', profileError);
-      
-      // Attempt to clean up the created user if profile creation fails
-      try {
-        await users.delete(newAccount.$id);
-        console.log('Cleaned up user account due to profile creation failure');
-      } catch (cleanupError) {
-        console.error('Failed to clean up user account:', cleanupError);
+      // If we created an auth user but failed to create the DB user,
+      // we should try to delete the auth user to keep things in sync
+      if (authUser && !userDoc) {
+        try {
+          // Only attempt to delete if we just created the auth user
+          await account.deleteSession('current');
+          console.log('Logged out user due to database document creation failure');
+          // We can't delete the auth user directly, as it requires verification
+        } catch (deleteError) {
+          console.error('Failed to delete session after database error:', deleteError);
+        }
       }
       
-      throw profileError;
+      throw new Error('Failed to create user in database: ' + dbError.message);
     }
-  } catch (error) {
+
+    // Send magic link for account verification
+    try {
+      const emailResult = await sendMagicLink(cleanEmail, "sign-up", "/dashboard");
+      if (!emailResult.success) {
+        console.error('Failed to send magic link:', emailResult.error);
+        // Don't throw error here, as account is already created
+      }
+    } catch (emailError) {
+      console.error('Error sending magic link:', emailError);
+      // Don't fail account creation if magic link fails
+    }
+
+    return parseStringify({ 
+      success: true, 
+      userId: authUser.$id,
+      userDocId: userDoc?.$id
+    });
+  } catch (error: any) {
     console.error('Error in createAccountServer:', error);
-    throw error;
+    
+    // Handle specific Appwrite errors
+    if (error.message?.includes('Invalid `email` param')) {
+      throw new Error('Please provide a valid email address');
+    }
+    
+    // Return a more specific error message
+    throw new Error(error.message || 'Failed to create account');
+  }
+};
+
+export const getUserByEmail = async (email: string) => {
+  const { databases } = await createAdminClient();
+
+  try {
+    // Clean the email
+    const cleanEmail = email.toLowerCase().trim();
+    
+    console.log('Looking up user by email:', cleanEmail);
+    
+    const result = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      [Query.equal("email", cleanEmail)]
+    );
+
+    if (result.total > 0) {
+      console.log('User found in database:', result.documents[0].$id);
+      return parseStringify(result.documents[0]);
+    }
+    
+    console.log('No user found in database for email:', cleanEmail);
+    return null;
+  } catch (error) {
+    console.error('Error in getUserByEmail:', error);
+    handleError(error, "Failed to get user");
+  }
+};
+
+export const updateUserRole = async (userId: string, role: string) => {
+  const { databases } = await createAdminClient();
+  
+  try {
+    // Verify the role is valid
+    if (!['admin', 'manager', 'user'].includes(role)) {
+      throw new Error('Invalid role');
+    }
+    
+    await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      userId,
+      { 
+        role,
+        updatedAt: new Date().toISOString()
+      }
+    );
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating user role:', error);
+    throw new Error('Failed to update user role');
+  }
+};
+
+export const updateUserDepartment = async (userId: string, department: string) => {
+  const { databases } = await createAdminClient();
+  
+  try {
+    // Verify the department exists
+    if (department) {
+      const deptResult = await databases.getDocument(
+        fullConfig.databaseId,
+        fullConfig.departmentsCollectionId,
+        department
+      );
+      
+      if (!deptResult) {
+        throw new Error('Department not found');
+      }
+    }
+    
+    await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      userId,
+      { 
+        department,
+        updatedAt: new Date().toISOString()
+      }
+    );
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating user department:', error);
+    throw new Error('Failed to update user department');
+  }
+};
+
+export const createDepartment = async (name: string, description?: string) => {
+  const { databases } = await createAdminClient();
+  
+  try {
+    const result = await databases.createDocument(
+      fullConfig.databaseId,
+      fullConfig.departmentsCollectionId,
+      ID.unique(),
+      {
+        name,
+        description,
+        allocatedStorage: 10 * 1024 * 1024 * 1024, // Default 10GB storage allocation
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    );
+    
+    return { success: true, department: result };
+  } catch (error) {
+    console.error('Error creating department:', error);
+    throw new Error('Failed to create department');
+  }
+};
+
+export const getDepartments = async () => {
+  const { databases } = await createAdminClient();
+  
+  try {
+    const result = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.departmentsCollectionId,
+      [Query.orderAsc('name')]
+    );
+    
+    return { success: true, departments: result.documents };
+  } catch (error) {
+    console.error('Error fetching departments:', error);
+    throw new Error('Failed to fetch departments');
+  }
+};
+
+// Sign out the user
+export async function signOut() {
+  try {
+    // Just delete the session cookie since we're using custom JWT sessions
+    await deleteCookie("session");
+    return { success: true };
+  } catch (error) {
+    console.error("Error signing out:", error);
+    return { success: false, error: "Failed to sign out" };
+  }
+}
+
+// Complete user profile
+export async function completeUserProfile(
+  accountId: string,
+  data: { 
+    fullName: string;
+    department?: string;
+    avatar?: string;
+  }
+) {
+  try {
+    const { databases } = await createAdminClient();
+    const sessionClient = await createSessionClient();
+    
+    if (!sessionClient) {
+      return { success: false, error: "Not authenticated" };
+    }
+    
+    // Find user document by accountId
+    const users = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      [Query.equal("accountId", [accountId])]
+    );
+    
+    if (users.total === 0) {
+      return { success: false, error: "User not found" };
+    }
+    
+    const userDoc = users.documents[0];
+    
+    // Update user profile
+    const updatedUser = await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      userDoc.$id,
+      {
+        fullName: data.fullName,
+        ...(data.department && { department: data.department }),
+        ...(data.avatar && { avatar: data.avatar }),
+        needsProfileCompletion: false,
+        updatedAt: new Date().toISOString()
+      }
+    );
+    
+    return { success: true, user: updatedUser };
+  } catch (error) {
+    console.error("Error completing user profile:", error);
+    return { success: false, error: "Failed to update profile" };
   }
 } 

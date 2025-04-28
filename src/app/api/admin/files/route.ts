@@ -1,104 +1,122 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { 
-  files as filesTable, 
-  departments as deptTable,
-  activityLogs,
-  users
-} from '@/server/db/schema/schema';
-import { account } from '@/lib/appwrite/config';
-import { eq, and, sql, asc, desc, like } from 'drizzle-orm';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query, ID } from 'node-appwrite';
 
 export async function GET(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const { databases } = await createAdminClient();
     const { searchParams } = new URL(request.url);
     const department = searchParams.get('department');
     const type = searchParams.get('type');
-    const sort = searchParams.get('sort');
+    const sort = searchParams.get('sort') || 'createdAt';
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '10');
 
-    const where = [];
+    // Build query
+    const queries = [
+      Query.equal('status', ['active'])
+    ];
     
     // Add department filter
     if (department && department !== 'all') {
-      where.push(eq(filesTable.departmentId, department));
+      queries.push(Query.equal('departmentId', [department]));
     }
 
     // Add type filter
     if (type && type !== 'all') {
-      where.push(like(filesTable.type, type === 'document' ? 'application/%' : `${type}/%`));
+      queries.push(Query.equal('type', [type]));
     }
-
-    // Add status filter - only show active files by default
-    where.push(eq(filesTable.status, 'active'));
 
     // Calculate offset for pagination
     const offset = (page - 1) * limit;
+    queries.push(Query.limit(limit));
+    queries.push(Query.offset(offset));
+    
+    // Add sorting
+    if (sort === 'name') {
+      queries.push(Query.orderDesc('name'));
+    } else if (sort === 'size') {
+      queries.push(Query.orderDesc('size'));
+    } else {
+      queries.push(Query.orderDesc('createdAt'));
+    }
 
-    // Determine sort field and direction
-    const orderBy = sort === 'name' ? filesTable.name : 
-                   sort === 'size' ? filesTable.size :
-                   filesTable.createdAt; // default to date
+    // Fetch files
+    const filesResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      queries
+    );
 
-    // Fetch files with joins
-    const filesList = await db
-      .select({
-        id: filesTable.id,
-        name: filesTable.name,
-        type: filesTable.type,
-        size: filesTable.size,
-        url: filesTable.url,
-        thumbnailUrl: filesTable.thumbnailUrl,
-        status: filesTable.status,
-        createdAt: filesTable.createdAt,
-        updatedAt: filesTable.updatedAt,
-        uploadedBy: {
-          id: users.id,
-          name: users.name,
-          email: users.email
-        },
-        department: {
-          id: deptTable.id,
-          name: deptTable.name
+    // Process files to include owner and department info
+    const formattedFiles = await Promise.all(
+      filesResult.documents.map(async (file) => {
+        // Get owner details
+        let uploadedBy = 'Unknown';
+        try {
+          if (file.ownerId) {
+            const user = await databases.getDocument(
+              fullConfig.databaseId,
+              fullConfig.usersCollectionId,
+              file.ownerId
+            );
+            uploadedBy = user.fullName || 'Unknown';
+          }
+        } catch (error) {
+          // User not found
         }
+
+        // Get department details
+        let departmentName = 'N/A';
+        try {
+          if (file.departmentId) {
+            const dept = await databases.getDocument(
+              fullConfig.databaseId,
+              'departments',
+              file.departmentId
+            );
+            departmentName = dept.name || 'N/A';
+          }
+        } catch (error) {
+          // Department not found
+        }
+
+        return {
+          id: file.$id,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          url: file.url,
+          thumbnailUrl: file.thumbnailUrl,
+          status: file.status,
+          createdAt: file.createdAt,
+          updatedAt: file.updatedAt,
+          uploadedBy,
+          department: departmentName
+        };
       })
-      .from(filesTable)
-      .leftJoin(users, eq(filesTable.userId, users.id))
-      .leftJoin(deptTable, eq(filesTable.departmentId, deptTable.id))
-      .where(and(...where))
-      .orderBy(desc(orderBy))
-      .limit(limit)
-      .offset(offset);
-
-    // Get total count for pagination
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(filesTable)
-      .where(and(...where));
-
-    // Format response
-    const formattedFiles = filesList.map(file => ({
-      ...file,
-      uploadedBy: file.uploadedBy ? file.uploadedBy.name : 'Unknown',
-      department: file.department?.name || 'N/A'
-    }));
+    );
 
     return NextResponse.json({
       files: formattedFiles,
       pagination: {
-        total: Number(count),
-        pages: Math.ceil(Number(count) / limit),
+        total: filesResult.total,
+        pages: Math.ceil(filesResult.total / limit),
         current: page
       }
     });
@@ -118,8 +136,8 @@ export async function POST(request: Request) {
 
     // Here you would typically:
     // 1. Validate file types and sizes
-    // 2. Upload files to storage (e.g., S3, Azure Blob Storage)
-    // 3. Save file metadata to database
+    // 2. Upload files to storage (e.g., Appwrite Storage)
+    // 3. Save file metadata to Appwrite database
 
     return NextResponse.json({ 
       message: 'Files uploaded successfully',
@@ -135,15 +153,20 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const { databases } = await createAdminClient();
     const { fileIds } = await request.json();
+    
     if (!Array.isArray(fileIds) || fileIds.length === 0) {
       return NextResponse.json(
         { error: 'Invalid request: fileIds array is required' },
@@ -152,44 +175,54 @@ export async function DELETE(request: Request) {
     }
 
     // First get files to delete for response
-    const filesToDelete = await db.transaction(async (tx) => {
-      // Verify files exist
-      const existingFiles = await tx
-        .select({
-          id: filesTable.id,
-          name: filesTable.name
-        })
-        .from(filesTable)
-        .where(sql`id = ANY(${fileIds})`);
-
-      if (existingFiles.length !== fileIds.length) {
-        const foundIds = existingFiles.map(f => f.id);
-        const missingIds = fileIds.filter(id => !foundIds.includes(id));
-        throw new Error(`Some files were not found: ${missingIds.join(', ')}`);
+    const filesToDelete = [];
+    
+    // Update files to deleted status
+    for (const fileId of fileIds) {
+      try {
+        // Get file info first
+        const file = await databases.getDocument(
+          fullConfig.databaseId,
+          fullConfig.filesCollectionId,
+          fileId
+        );
+        
+        filesToDelete.push({
+          id: file.$id,
+          name: file.name
+        });
+        
+        // Update status to deleted
+        await databases.updateDocument(
+          fullConfig.databaseId,
+          fullConfig.filesCollectionId,
+          fileId,
+          {
+            status: 'deleted',
+            updatedAt: new Date().toISOString()
+          }
+        );
+        
+        // Log the activity
+        await databases.createDocument(
+          fullConfig.databaseId,
+          fullConfig.activityLogsCollectionId,
+          ID.unique(),
+          {
+            action: 'DELETE_FILES',
+            description: `Admin deleted file: ${file.name}`,
+            userId: currentUser.$id,
+            createdAt: new Date().toISOString()
+          }
+        );
+      } catch (error) {
+        console.error(`Error deleting file ${fileId}:`, error);
       }
-
-      // Update files status to deleted
-      await tx
-        .update(filesTable)
-        .set({ 
-          status: 'deleted',
-          updatedAt: new Date()
-        })
-        .where(sql`id = ANY(${fileIds})`);
-
-      // Log the activity
-      await tx.insert(activityLogs).values({
-        action: 'DELETE_FILES',
-        details: `Admin deleted files: ${fileIds.join(', ')}`,
-        userId: user.$id.substring(0, 36)
-      });
-
-      return existingFiles;
-    });
+    }
 
     return NextResponse.json({ 
       message: 'Files deleted successfully',
-      deletedCount: fileIds.length 
+      deletedCount: filesToDelete.length 
     });
   } catch (error) {
     console.error('Error deleting files:', error);
@@ -202,15 +235,20 @@ export async function DELETE(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const { databases } = await createAdminClient();
     const { fileId, status } = await request.json();
+    
     if (!fileId || typeof status !== 'string' || !['active', 'inactive'].includes(status)) {
       return NextResponse.json(
         { error: 'Invalid request: fileId and valid status are required' },
@@ -218,48 +256,48 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // Update file status in a transaction
-    const result = await db.transaction(async (tx) => {
-      // Verify file exists
-      const [existingFile] = await tx
-        .select({
-          id: filesTable.id,
-          name: filesTable.name,
-          userId: filesTable.userId,
-          departmentId: filesTable.departmentId
-        })
-        .from(filesTable)
-        .where(eq(filesTable.id, fileId))
-        .limit(1);
-
-      if (!existingFile) {
-        throw new Error('File not found');
-      }
-
+    try {
+      // Get file info first
+      const file = await databases.getDocument(
+        fullConfig.databaseId,
+        fullConfig.filesCollectionId,
+        fileId
+      );
+      
       // Update file status
-      const [updatedFile] = await tx
-        .update(filesTable)
-        .set({ 
+      const updatedFile = await databases.updateDocument(
+        fullConfig.databaseId,
+        fullConfig.filesCollectionId,
+        fileId,
+        {
           status,
-          updatedAt: new Date()
-        })
-        .where(eq(filesTable.id, fileId))
-        .returning();
-
+          updatedAt: new Date().toISOString()
+        }
+      );
+      
       // Log the activity
-      await tx.insert(activityLogs).values({
-        action: 'UPDATE_FILE_ACCESS',
-        details: `Admin updated file ${existingFile.name} (${fileId}) status to ${status}`,
-        userId: user.$id.substring(0, 36)
+      await databases.createDocument(
+        fullConfig.databaseId,
+        'activity_logs',
+        ID.unique(),
+        {
+          action: 'UPDATE_FILE_ACCESS',
+          description: `Admin updated file ${file.name} (${fileId}) status to ${status}`,
+          userId: currentUser.$id,
+          createdAt: new Date().toISOString()
+        }
+      );
+      
+      return NextResponse.json({ 
+        message: 'File access updated successfully',
+        file: updatedFile
       });
-
-      return updatedFile;
-    });
-
-    return NextResponse.json({ 
-      message: 'File access updated successfully',
-      file: result
-    });
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'File not found or could not be updated' },
+        { status: 404 }
+      );
+    }
   } catch (error) {
     console.error('Error updating file access:', error);
     return NextResponse.json(
@@ -271,13 +309,21 @@ export async function PATCH(request: Request) {
 
 // Helper function to get available departments
 export async function getDepartments() {
-  const departments = await db
-    .select({
-      id: deptTable.id,
-      name: deptTable.name
-    })
-    .from(deptTable)
-    .orderBy(asc(deptTable.name));
-
-  return departments;
+  try {
+    const { databases } = await createAdminClient();
+    
+    const departments = await databases.listDocuments(
+      fullConfig.databaseId,
+      'departments',
+      [Query.orderAsc('name')]
+    );
+    
+    return departments.documents.map(dept => ({
+      id: dept.$id,
+      name: dept.name
+    }));
+  } catch (error) {
+    console.error('Error getting departments:', error);
+    return [];
+  }
 } 

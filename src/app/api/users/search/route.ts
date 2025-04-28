@@ -1,65 +1,77 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { users, departments } from '@/server/db/schema/schema';
-import { and, eq, like, or } from 'drizzle-orm';
-import { account } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 
 export async function GET(request: NextRequest) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
+    const { databases } = await createAdminClient();
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q') || '';
 
-    // Build search condition
-    const searchConditions = [];
+    // Build query conditions
+    const queries = [
+      Query.equal('status', ['active']),
+      Query.limit(10)
+    ];
+    
     if (query) {
-      searchConditions.push(
-        or(
-          like(users.name, `%${query}%`),
-          like(users.email, `%${query}%`)
-        )
-      );
+      // Appwrite doesn't support OR between different fields in a single query
+      // So we'll do a search on fullName and then filter results
+      queries.push(Query.search('fullName', query));
     }
 
-    // Search users based on role and department
-    const searchResults = await db.query.users.findMany({
-      where: and(
-        // Add search conditions
-        searchConditions.length > 0 ? and(...searchConditions) : undefined,
-        eq(users.status, 'active')
-      ),
-      columns: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-      
-      },
-      with: {
-        department: {
-          columns: {
-            name: true,
-          },
-        },
-      },
-      limit: 10,
-    });
+    // Get users from Appwrite
+    const usersResult = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      queries
+    );
 
-    const formattedUsers = searchResults.map((user: any) => ({
-      id: user.id.toString(),
-      name: user.name,
+    // Format the results
+    const formattedUsers = usersResult.documents.map(user => ({
+      id: user.$id,
+      name: user.fullName,
       email: user.email,
       role: user.role,
-      department: user.department?.name || 'N/A',
-      avatar: user.avatarUrl,
+      department: user.department || 'N/A',
+      avatar: user.avatar,
     }));
+
+    // If we're searching by email and didn't find it in the name search, do an additional filter
+    if (query && query.includes('@')) {
+      const emailUsers = await databases.listDocuments(
+        fullConfig.databaseId,
+        fullConfig.usersCollectionId,
+        [
+          Query.equal('status', ['active']),
+          Query.search('email', query),
+          Query.limit(10)
+        ]
+      );
+      
+      // Add any users found by email that aren't already in the results
+      const emailIds = formattedUsers.map(u => u.id);
+      const additionalUsers = emailUsers.documents
+        .filter(user => !emailIds.includes(user.$id))
+        .map(user => ({
+          id: user.$id,
+          name: user.fullName,
+          email: user.email,
+          role: user.role,
+          department: user.department || 'N/A',
+          avatar: user.avatar,
+        }));
+      
+      formattedUsers.push(...additionalUsers);
+    }
 
     return NextResponse.json({ users: formattedUsers });
   } catch (error) {

@@ -66,12 +66,43 @@ module.exports = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: 0 },
         },
+        "fade-in": {
+          from: { opacity: 0 },
+          to: { opacity: 1 },
+        },
+        "slide-in": {
+          from: { transform: "translateY(10px)", opacity: 0 },
+          to: { transform: "translateY(0)", opacity: 1 },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "fade-in": "fade-in 0.3s ease-in-out",
+        "slide-in": "slide-in 0.3s ease-in-out",
+      },
+      fontSize: {
+        // Dynamic font sizes that scale with the font-size setting
+        'dynamic-xs': 'calc(0.75rem * var(--font-scale, 1))',
+        'dynamic-sm': 'calc(0.875rem * var(--font-scale, 1))',
+        'dynamic-base': 'calc(1rem * var(--font-scale, 1))',
+        'dynamic-lg': 'calc(1.125rem * var(--font-scale, 1))',
+        'dynamic-xl': 'calc(1.25rem * var(--font-scale, 1))',
+        'dynamic-2xl': 'calc(1.5rem * var(--font-scale, 1))',
+      },
+      typography: {
+        DEFAULT: {
+          css: {
+            fontSize: 'var(--font-scale, 1)rem',
+            lineHeight: {
+              DEFAULT: '1.75',
+            },
+          },
+        },
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
-} 
+  plugins: [
+    require("tailwindcss-animate"),
+  ],
+}

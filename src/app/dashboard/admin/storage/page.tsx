@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DashboardLayout } from '@/components/common/layout/DashboardLayout';
+import DashboardLayout from '@/components/layout/DashboardLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -74,6 +74,34 @@ interface FileTypeDistribution {
   totalSize: number;
 }
 
+// Add API response interfaces
+interface ApiResponse<T> {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  json: () => Promise<T>;
+}
+
+interface DepartmentsResponse {
+  departments: DepartmentStorage[];
+  message?: string;
+}
+
+interface UsersResponse {
+  users: UserStorage[];
+  message?: string;
+}
+
+interface TrendsResponse {
+  trends: StorageTrend[];
+  message?: string;
+}
+
+interface FileTypeResponse {
+  distribution: FileTypeDistribution[];
+  message?: string;
+}
+
 export default function StorageAllocationsPage() {
   const [departments, setDepartments] = useState<DepartmentStorage[]>([]);
   const [users, setUsers] = useState<UserStorage[]>([]);
@@ -82,36 +110,81 @@ export default function StorageAllocationsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d'>('30d');
+  const [errors, setErrors] = useState<{[key: string]: string}>({});
 
   useEffect(() => {
     fetchStorageData();
   }, [selectedDepartment, timeRange]);
 
   const fetchStorageData = async () => {
+    setLoading(true);
+    setErrors({});
+    
     try {
-      setLoading(true);
-      const [deptResponse, usersResponse, trendsResponse, distributionResponse] = await Promise.all([
-        fetch('/api/admin/storage/departments'),
-        fetch('/api/admin/storage/users'),
-        fetch(`/api/admin/storage/trends?range=${timeRange}`),
-        fetch('/api/admin/storage/file-types')
-      ]);
-
-      if (!deptResponse.ok || !usersResponse.ok || !trendsResponse.ok || !distributionResponse.ok) {
-        throw new Error('Failed to fetch storage data');
+      // Fetch departments data
+      let deptResponse: Response;
+      try {
+        deptResponse = await fetch('/api/admin/storage/departments');
+        if (!deptResponse.ok) {
+          const errorData = await deptResponse.json() as { message: string };
+          setErrors(prev => ({ ...prev, departments: `Departments: ${errorData.message || deptResponse.statusText}` }));
+          throw new Error(`Departments API error: ${deptResponse.status}`);
+        }
+        const deptData = await deptResponse.json() as DepartmentsResponse;
+        setDepartments(deptData.departments || []);
+      } catch (error) {
+        console.error('Error fetching departments:', error);
+        setErrors(prev => ({ ...prev, departments: `Failed to fetch departments: ${error instanceof Error ? error.message : 'Unknown error'}` }));
       }
 
-      const [deptData, usersData, trendsData, distributionData] = await Promise.all([
-        deptResponse.json(),
-        usersResponse.json(),
-        trendsResponse.json(),
-        distributionResponse.json()
-      ]);
+      // Fetch users data
+      let usersResponse: Response;
+      try {
+        usersResponse = await fetch('/api/admin/storage/users');
+        if (!usersResponse.ok) {
+          const errorData = await usersResponse.json() as { message: string };
+          setErrors(prev => ({ ...prev, users: `Users: ${errorData.message || usersResponse.statusText}` }));
+          throw new Error(`Users API error: ${usersResponse.status}`);
+        }
+        const usersData = await usersResponse.json() as UsersResponse;
+        setUsers(usersData.users || []);
+      } catch (error) {
+        console.error('Error fetching users:', error);
+        setErrors(prev => ({ ...prev, users: `Failed to fetch users: ${error instanceof Error ? error.message : 'Unknown error'}` }));
+      }
 
-      setDepartments(deptData.departments);
-      setUsers(usersData.users);
-      setStorageTrends(trendsData.trends);
-      setFileTypeDistribution(distributionData.distribution);
+      // Fetch trends data
+      let trendsResponse: Response;
+      try {
+        trendsResponse = await fetch(`/api/admin/storage/trends?range=${timeRange}`);
+        if (!trendsResponse.ok) {
+          const errorData = await trendsResponse.json() as { message: string };
+          setErrors(prev => ({ ...prev, trends: `Trends: ${errorData.message || trendsResponse.statusText}` }));
+          throw new Error(`Trends API error: ${trendsResponse.status}`);
+        }
+        const trendsData = await trendsResponse.json() as TrendsResponse;
+        setStorageTrends(trendsData.trends || []);
+      } catch (error) {
+        console.error('Error fetching trends:', error);
+        setErrors(prev => ({ ...prev, trends: `Failed to fetch trends: ${error instanceof Error ? error.message : 'Unknown error'}` }));
+      }
+
+      // Fetch file type distribution data
+      let distributionResponse: Response;
+      try {
+        distributionResponse = await fetch('/api/admin/storage/file-types');
+        if (!distributionResponse.ok) {
+          const errorData = await distributionResponse.json() as { message: string };
+          setErrors(prev => ({ ...prev, fileTypes: `File Types: ${errorData.message || distributionResponse.statusText}` }));
+          throw new Error(`File types API error: ${distributionResponse.status}`);
+        }
+        const distributionData = await distributionResponse.json() as FileTypeResponse;
+        setFileTypeDistribution(distributionData.distribution || []);
+      } catch (error) {
+        console.error('Error fetching file type distribution:', error);
+        setErrors(prev => ({ ...prev, fileTypes: `Failed to fetch file types: ${error instanceof Error ? error.message : 'Unknown error'}` }));
+      }
+
     } catch (error) {
       console.error('Error fetching storage data:', error);
       toast.error('Failed to fetch storage data');
@@ -128,26 +201,33 @@ export default function StorageAllocationsPage() {
         body: JSON.stringify({ allocatedStorage: newAllocation }),
       });
 
-      if (!response.ok) throw new Error('Failed to update storage allocation');
+      if (!response.ok) {
+        const errorData = await response.json() as { message: string };
+        throw new Error(errorData.message || 'Failed to update storage allocation');
+      }
       
       toast.success('Storage allocation updated successfully');
       fetchStorageData();
     } catch (error) {
       console.error('Error updating storage allocation:', error);
-      toast.error('Failed to update storage allocation');
+      toast.error(error instanceof Error ? error.message : 'Failed to update storage allocation');
     }
   };
 
   const formatStorage = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    if (bytes === 0) return '0 Byte';
-    const i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)).toString());
-    return Math.round(bytes / Math.pow(1024, i)) + ' ' + sizes[i];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   const totalAllocatedStorage = departments.reduce((acc, dept) => acc + dept.allocatedStorage, 0);
   const totalUsedStorage = departments.reduce((acc, dept) => acc + dept.usedStorage, 0);
-  const storageUsagePercentage = (totalUsedStorage / totalAllocatedStorage) * 100;
+  const storageUsagePercentage = totalAllocatedStorage > 0 ? (totalUsedStorage / totalAllocatedStorage) * 100 : 0;
+
+  // If we have any errors, display them in a debug card
+  const hasErrors = Object.keys(errors).length > 0;
 
   return (
     <DashboardLayout>
@@ -156,6 +236,32 @@ export default function StorageAllocationsPage() {
           <h1 className="text-2xl font-bold">Storage Allocations</h1>
           <p className="text-gray-500">Manage storage space for departments and monitor usage</p>
         </div>
+
+        {/* Error display section - only shown when errors exist */}
+        {hasErrors && (
+          <Card className="border-red-400">
+            <CardHeader>
+              <CardTitle className="text-red-600">API Connection Issues</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {Object.entries(errors).map(([key, error]) => (
+                  <div key={key} className="text-sm text-red-600">
+                    <strong>{key}:</strong> {error}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4">
+                <button
+                  onClick={fetchStorageData}
+                  className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                >
+                  Retry Connection
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card>
@@ -200,6 +306,19 @@ export default function StorageAllocationsPage() {
           </Card>
         </div>
 
+        <div className="flex items-center space-x-4 mb-4">
+          <Select value={timeRange} onValueChange={(value) => setTimeRange(value as '7d' | '30d' | '90d')}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Time range" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7d">Last 7 Days</SelectItem>
+              <SelectItem value="30d">Last 30 Days</SelectItem>
+              <SelectItem value="90d">Last 90 Days</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card>
             <CardHeader>
@@ -207,26 +326,32 @@ export default function StorageAllocationsPage() {
             </CardHeader>
             <CardContent>
               <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={storageTrends}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip />
-                    <Line 
-                      type="monotone" 
-                      dataKey="usedStorage" 
-                      stroke="#8884d8" 
-                      name="Used Storage"
-                    />
-                    <Line 
-                      type="monotone" 
-                      dataKey="totalStorage" 
-                      stroke="#82ca9d" 
-                      name="Total Storage"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                {loading ? (
+                  <div className="flex items-center justify-center h-full">Loading trends...</div>
+                ) : storageTrends.length === 0 ? (
+                  <div className="flex items-center justify-center h-full">No trend data available</div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={storageTrends}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" />
+                      <YAxis />
+                      <Tooltip />
+                      <Line 
+                        type="monotone" 
+                        dataKey="usedStorage" 
+                        stroke="#8884d8" 
+                        name="Used Storage"
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="totalStorage" 
+                        stroke="#82ca9d" 
+                        name="Total Storage"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -237,16 +362,22 @@ export default function StorageAllocationsPage() {
             </CardHeader>
             <CardContent>
               <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={departments}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis />
-                    <Tooltip />
-                    <Bar dataKey="usedStorage" fill="#8884d8" name="Used Storage" />
-                    <Bar dataKey="allocatedStorage" fill="#82ca9d" name="Allocated Storage" />
-                  </BarChart>
-                </ResponsiveContainer>
+                {loading ? (
+                  <div className="flex items-center justify-center h-full">Loading department data...</div>
+                ) : departments.length === 0 ? (
+                  <div className="flex items-center justify-center h-full">No department data available</div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={departments}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="usedStorage" fill="#8884d8" name="Used Storage" />
+                      <Bar dataKey="allocatedStorage" fill="#82ca9d" name="Allocated Storage" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -257,24 +388,30 @@ export default function StorageAllocationsPage() {
             </CardHeader>
             <CardContent>
               <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={fileTypeDistribution}
-                      dataKey="totalSize"
-                      nameKey="type"
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={100}
-                      label
-                    >
-                      {fileTypeDistribution.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={`hsl(${index * 45}, 70%, 50%)`} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
+                {loading ? (
+                  <div className="flex items-center justify-center h-full">Loading file type data...</div>
+                ) : fileTypeDistribution.length === 0 ? (
+                  <div className="flex items-center justify-center h-full">No file type data available</div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={fileTypeDistribution}
+                        dataKey="totalSize"
+                        nameKey="type"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={100}
+                        label
+                      >
+                        {fileTypeDistribution.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={`hsl(${index * 45}, 70%, 50%)`} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -391,4 +528,4 @@ export default function StorageAllocationsPage() {
       </div>
     </DashboardLayout>
   );
-} 
+}

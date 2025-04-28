@@ -1,6 +1,5 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { getToken } from 'next-auth/jwt';
+import { NextRequest, NextResponse } from "next/server";
+import jwt from "jsonwebtoken";
 
 // Define public routes that don't require authentication
 const publicRoutes = [
@@ -10,6 +9,7 @@ const publicRoutes = [
   '/sign-out',
   '/(auth)',  // Include all paths under the auth group
   '/api/auth',
+  '/api/auth/signout',  // Explicitly add the signout endpoint
   '/api/webhook',
   '/api/departments',
 ];
@@ -17,8 +17,6 @@ const publicRoutes = [
 // Define admin-only routes
 const adminRoutes = [
   '/dashboard/admin',
-  '/dashboard/settings',
-  '/dashboard/users',
   '/api/admin',
 ];
 
@@ -28,83 +26,86 @@ const managerRoutes = [
   '/dashboard/reports',
 ];
 
-export async function middleware(request: NextRequest) {
-  const token = await getToken({ req: request });
-  const url = request.nextUrl.clone();
-  const { pathname } = url;
-
-  // Root path is handled by the welcome page itself
-  if (pathname === '/') {
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  
+  // Log the request path and available cookies
+  console.log(`[Middleware] Processing request for: ${pathname}`);
+  const cookies = request.cookies.getAll().map(c => c.name);
+  console.log(`[Middleware] Available cookies: ${cookies.join(', ')}`);
+  
+  // Always skip middleware for the magic link callback path
+  if (pathname.startsWith('/api/auth/callback/magic-link')) {
+    console.log(`[Middleware] Skipping middleware for magic link callback`);
     return NextResponse.next();
   }
-
-  // Allow sign-in and sign-up even for authenticated users
-  if (pathname === '/sign-in' || pathname === '/sign-up') {
-    // If user is already authenticated and tries to access auth pages, redirect to dashboard
-    if (token) {
-      if (token.role === 'admin') {
-        return NextResponse.redirect(new URL('/dashboard/admin/settings', request.url));
-      }
-      return NextResponse.redirect(new URL('/dashboard/files', request.url));
-    }
-    return NextResponse.next();
-  }
-
-  // Check for OTP verification paths and redirect to dashboard
-  if (pathname.startsWith('/otp-verification')) {
-    console.log('Intercepting OTP verification in middleware - redirecting to dashboard');
-    return NextResponse.redirect(new URL('/dashboard/files', request.url));
-  }
-
-  // Allow public routes
+  
+  // Allow public routes without authentication
   if (publicRoutes.some(route => pathname.startsWith(route))) {
+    console.log(`[Middleware] Public route ${pathname}, proceeding without auth check`);
     return NextResponse.next();
   }
-
-  // Check for authentication
-  if (!token) {
-    const signInUrl = new URL('/sign-in', request.url);
-    signInUrl.searchParams.set('callbackUrl', pathname);
-    return NextResponse.redirect(signInUrl);
+  
+  // Check for the session cookie
+  const sessionCookie = request.cookies.get("session");
+  
+  // If there's no session cookie, redirect to sign-in
+  if (!sessionCookie) {
+    console.log(`[Middleware] No session cookie found for ${pathname}, redirecting to sign-in`);
+    return NextResponse.redirect(new URL(`/sign-in?redirect=${encodeURIComponent(pathname)}`, request.url));
   }
-
-  // Check for admin routes
-  if (adminRoutes.some(route => pathname.startsWith(route))) {
-    if (token.role !== 'admin') {
-      return NextResponse.redirect(new URL('/dashboard/files', request.url));
+  
+  try {
+    // Verify the session token
+    console.log(`[Middleware] Verifying session token for ${pathname}`);
+    const decoded = jwt.verify(
+      sessionCookie.value, 
+      process.env.JWT_SECRET || "fallback-secret"
+    ) as {
+      id: string;
+      email: string;
+      role?: string;
+      iat: number;
+      exp: number;
+    };
+    
+    console.log(`[Middleware] Session verified for user: ${decoded.email} with role: ${decoded.role || 'none'} on route ${pathname}`);
+    
+    // Check role-based access for admin routes
+    if (adminRoutes.some(route => pathname.startsWith(route)) && decoded.role !== 'admin') {
+      console.log(`[Middleware] Unauthorized access to admin route ${pathname} by user ${decoded.email} with role ${decoded.role || 'none'}`);
+      return NextResponse.redirect(new URL('/dashboard', request.url));
     }
-  }
-
-  // Check for manager routes
-  if (managerRoutes.some(route => pathname.startsWith(route))) {
-    if (token.role !== 'admin' && token.role !== 'manager') {
-      return NextResponse.redirect(new URL('/dashboard/files', request.url));
+    
+    // Check role-based access for manager routes
+    if (managerRoutes.some(route => pathname.startsWith(route)) && 
+        decoded.role !== 'admin' && decoded.role !== 'manager') {
+      console.log(`[Middleware] Unauthorized access to manager route ${pathname} by user ${decoded.email} with role ${decoded.role || 'none'}`);
+      return NextResponse.redirect(new URL('/dashboard', request.url));
     }
+    
+    // If verification succeeded and role checks passed, allow the request
+    return NextResponse.next();
+  } catch (error) {
+    console.error(`[Middleware] Session verification failed for ${pathname}:`, error);
+    // If verification failed, clear the invalid cookie and redirect to sign-in
+    const response = NextResponse.redirect(new URL(`/sign-in?error=invalid-session&redirect=${encodeURIComponent(pathname)}`, request.url));
+    response.cookies.delete("session");
+    return response;
   }
-
-  // Add user info to headers for use in components
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set('x-user-id', token.sub as string);
-  requestHeaders.set('x-user-role', token.role as string);
-  requestHeaders.set('x-user-email', token.email as string);
-
-  return NextResponse.next({
-    request: {
-      headers: requestHeaders,
-    },
-  });
 }
 
-// Configure which routes to run middleware on
+// Configure which paths the middleware should run on
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public folder
-     */
-    '/((?!_next/static|_next/image|favicon.ico|public).*)',
+    // Protected routes
+    "/dashboard/:path*",
+    "/settings/:path*",
+    "/profile/:path*",
+    "/api/admin/:path*",
+    
+    // Auth routes (for redirecting already authenticated users)
+    "/sign-in",
+    "/sign-up",
   ],
 }; 

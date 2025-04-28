@@ -1,11 +1,10 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { Query } from 'appwrite';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
-import { db } from '@/lib/db';
-import { settings } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query, ID } from 'node-appwrite';
 import { rateLimitMiddleware } from '@/middleware/rate-limit';
 
 // Default settings if none exist in the database
@@ -32,48 +31,57 @@ const defaultSettings = {
   },
 };
 
+// Remove the hardcoded collection ID since we're using it from config
+// const SETTINGS_COLLECTION_ID = 'app_settings';
+
 export async function GET(request: Request) {
   // Apply rate limiting
   const rateLimitResponse = await rateLimitMiddleware(request as any, 'settings:get');
   if (rateLimitResponse.status === 429) return rateLimitResponse;
 
   try {
-    // Get the current user using Appwrite
-    const currentUser = await account.get();
+    // Get the current user
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
     
     // Verify admin role
-    const userProfiles = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      [
-        Query.equal('userId', sanitizeUserId(currentUser.$id))
-      ]
-    );
-    
-    if (userProfiles.documents.length === 0 || 
-        userProfiles.documents[0].role !== 'admin') {
-      return new NextResponse('Unauthorized', { status: 401 });
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get all settings from the database
-    const dbSettings = await db.select().from(settings);
+    const { databases } = await createAdminClient();
     
-    // Convert array of settings to object
-    const settingsObject = dbSettings.reduce((acc, setting) => {
-      acc[setting.key] = setting.value;
-      return acc;
-    }, {} as Record<string, any>);
-
-    // Merge with default settings
-    const mergedSettings = {
-      ...defaultSettings,
-      ...settingsObject,
-    };
-
-    return NextResponse.json(mergedSettings);
+    // Try to get settings from Appwrite
+    try {
+      const settingsResult = await databases.listDocuments(
+        fullConfig.databaseId,
+        fullConfig.appSettingsCollectionId,
+        []
+      );
+      
+      // Convert array of settings to object
+      const settingsObject = settingsResult.documents.reduce((acc, setting) => {
+        acc[setting.key] = setting.value;
+        return acc;
+      }, {} as Record<string, any>);
+      
+      // Merge with default settings
+      const mergedSettings = {
+        ...defaultSettings,
+        ...settingsObject,
+      };
+      
+      return NextResponse.json(mergedSettings);
+    } catch (error) {
+      // If the collection doesn't exist or there's an error, return default settings
+      console.error('Error fetching settings, returning defaults:', error);
+      return NextResponse.json(defaultSettings);
+    }
   } catch (error) {
     console.error('Error fetching settings:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+    return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -83,56 +91,76 @@ export async function PUT(request: Request) {
   if (rateLimitResponse.status === 429) return rateLimitResponse;
 
   try {
-    // Get the current user using Appwrite
-    const currentUser = await account.get();
+    // Get the current user
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
     
     // Verify admin role
-    const userProfiles = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      [
-        Query.equal('userId', sanitizeUserId(currentUser.$id))
-      ]
-    );
-    
-    if (userProfiles.documents.length === 0 || 
-        userProfiles.documents[0].role !== 'admin') {
-      return new NextResponse('Unauthorized', { status: 401 });
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
+    const { databases } = await createAdminClient();
     const newSettings = await request.json();
 
     // Validate settings structure
     if (!validateSettings(newSettings)) {
-      return new NextResponse('Invalid settings format', { status: 400 });
+      return NextResponse.json({ message: 'Invalid settings format' }, { status: 400 });
     }
 
-    // Convert settings object to array of key-value pairs
-    const settingsArray = Object.entries(newSettings).map(([key, value]) => ({
-      key,
-      value,
-      description: `Setting for ${key}`,
-      updatedAt: new Date(),
-    }));
-
-    // Update settings in the database
-    for (const setting of settingsArray) {
-      await db
-        .insert(settings)
-        .values(setting)
-        .onConflictDoUpdate({
-          target: settings.key,
-          set: {
-            value: setting.value,
-            updatedAt: setting.updatedAt,
-          },
-        });
+    // Convert settings object to array of documents to create/update
+    try {
+      // First, try to get existing settings
+      const existingSettings = await databases.listDocuments(
+        fullConfig.databaseId,
+        fullConfig.appSettingsCollectionId,
+        []
+      );
+      
+      const existingMap = new Map(
+        existingSettings.documents.map(setting => [setting.key, setting.$id])
+      );
+      
+      // Update settings in Appwrite
+      for (const [key, value] of Object.entries(newSettings)) {
+        if (existingMap.has(key)) {
+          // Update existing setting
+          await databases.updateDocument(
+            fullConfig.databaseId,
+            fullConfig.appSettingsCollectionId,
+            existingMap.get(key)!,
+            {
+              value,
+              updatedAt: new Date().toISOString(),
+            }
+          );
+        } else {
+          // Create new setting
+          await databases.createDocument(
+            fullConfig.databaseId,
+            fullConfig.appSettingsCollectionId,
+            ID.unique(),
+            {
+              key,
+              value,
+              description: `Setting for ${key}`,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }
+          );
+        }
+      }
+      
+      return NextResponse.json({ message: 'Settings updated successfully' });
+    } catch (error) {
+      console.error('Error updating settings:', error);
+      return NextResponse.json({ message: 'Failed to update settings' }, { status: 500 });
     }
-
-    return NextResponse.json({ message: 'Settings updated successfully' });
   } catch (error) {
     console.error('Error updating settings:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+    return NextResponse.json({ message: 'Internal Server Error' }, { status: 500 });
   }
 }
 

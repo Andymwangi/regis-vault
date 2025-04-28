@@ -2,138 +2,162 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Query } from 'appwrite';
-import { account, databases, storage, DATABASES, COLLECTIONS, STORAGE_BUCKETS, sanitizeUserId } from '@/lib/appwrite/config';
-import { db } from '@/lib/db';
-import { files, sharedFiles } from '@/server/db/schema/schema';
-import { eq, or } from 'drizzle-orm';
-import { unlink } from 'fs/promises';
-import { join } from 'path';
+import { account, databases, storage, fullConfig } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { ID } from 'node-appwrite';
+
+// Helper function to sanitize user ID
+const sanitizeUserId = (id: string) => id.replace(/\./g, '_');
 
 export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    // Get the current user using Appwrite
-    const currentUser = await account.get();
+    // Important: First perform a truly asynchronous operation
+    const currentUser = await getCurrentUser();
+    
+    // Now it's safe to use params
+    const fileId = params.id;
     
     if (!currentUser) {
-      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    
-    // Get user profile data
-    const userProfiles = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      [
-        Query.equal('userId', sanitizeUserId(currentUser.$id))
-      ]
-    );
-    
-    if (userProfiles.documents.length === 0) {
-      return NextResponse.json({ message: 'User profile not found' }, { status: 404 });
-    }
-    
-    const userProfile = userProfiles.documents[0];
-    const fileId = params.id;
 
-    // Check if user has access to the file
-    const file = await db.query.files.findFirst({
-      where: or(
-        eq(files.id, fileId),
-        eq(sharedFiles.fileId, fileId)
-      ),
-      with: {
-        shares: true
-      }
-    });
+    const { databases, storage } = await createAdminClient();
+    
+    // Get the file
+    const file = await databases.getDocument(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      fileId
+    );
 
     if (!file) {
-      return NextResponse.json({ message: 'File not found' }, { status: 404 });
+      return NextResponse.json({ error: 'File not found' }, { status: 404 });
     }
 
-    // Check if user owns the file or has been shared with them
-    const hasAccess = file.userId === currentUser.$id || 
-                     file.shares.some((share: { sharedWithUserId: string }) => 
-                       share.sharedWithUserId === currentUser.$id
-                     );
-
-    if (!hasAccess) {
-      return NextResponse.json({ message: 'Access denied' }, { status: 403 });
+    // Check if user has permission to delete the file
+    if (file.ownerId !== currentUser.$id) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    // Try to delete the file from Appwrite storage if it exists there
+    // Delete from storage
+    await storage.deleteFile(fullConfig.storageId, file.bucketFileId);
+
+    // Delete from database
+    await databases.deleteDocument(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      fileId
+    );
+
+    // Log the delete activity
     try {
-      // Get Appwrite file ID from metadata
-      const appwriteFileId = await getAppwriteFileIdFromMetadata(fileId);
-      
-      if (appwriteFileId) {
-        // Delete from Appwrite storage
-        await storage.deleteFile(STORAGE_BUCKETS.FILES, appwriteFileId);
-        
-        // Delete metadata from Appwrite database
-        const filesMetadata = await databases.listDocuments(
-          DATABASES.MAIN,
-          COLLECTIONS.FILES_METADATA,
-          [
-            Query.equal('postgres_file_id', fileId)
-          ]
-        );
-        
-        if (filesMetadata.documents.length > 0) {
-          await databases.deleteDocument(
-            DATABASES.MAIN,
-            COLLECTIONS.FILES_METADATA,
-            filesMetadata.documents[0].$id
-          );
+      await databases.createDocument(
+        fullConfig.databaseId,
+        fullConfig.activityLogsCollectionId,
+        ID.unique(),
+        {
+          userId: currentUser.$id,
+          type: 'DELETE_FILE',
+          description: `Deleted file: ${file.name}`,
+          createdAt: new Date().toISOString()
         }
-      }
-    } catch (storageError) {
-      console.error('Error deleting from Appwrite storage:', storageError);
-      // Continue with local file deletion even if Appwrite deletion fails
+      );
+    } catch (error) {
+      console.error('Failed to log activity:', error);
     }
 
-    // Fallback: Delete the file from local disk if it exists
-    try {
-      const filePath = join(process.cwd(), 'public', file.url);
-      await unlink(filePath);
-    } catch (fsError) {
-      console.error('Error deleting local file:', fsError);
-      // Continue with database deletion even if file deletion fails
-    }
-
-    // Delete the file record from database
-    await db.delete(files).where(eq(files.id, fileId));
-
-    return NextResponse.json({ message: 'File deleted successfully' });
+    return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error deleting file:', error);
     return NextResponse.json(
-      { message: 'Internal server error' },
+      { error: 'Failed to delete file' },
       { status: 500 }
     );
   }
 }
 
-// Helper function to find Appwrite file ID from metadata
-async function getAppwriteFileIdFromMetadata(postgresFileId: string) {
+export async function GET(
+  request: Request,
+  { params }: { params: { id: string } }
+) {
   try {
-    // Query the Appwrite files_metadata collection to find the file
-    const filesMetadata = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.FILES_METADATA,
-      [
-        Query.equal('postgres_file_id', postgresFileId)
-      ]
-    );
+    // First perform a truly asynchronous operation
+    const currentUser = await getCurrentUser();
+
+    // Now it's safe to use params
+    const fileId = params.id;
+    console.log('File details API called for:', fileId);
     
-    if (filesMetadata.documents.length > 0) {
-      return filesMetadata.documents[0].file_id; // Return the Appwrite storage file ID
+    if (!currentUser) {
+      console.error('Unauthorized file details request');
+      return NextResponse.json(
+        { message: 'Unauthorized' },
+        { status: 401 }
+      );
     }
     
-    return null;
+    console.log('User authenticated:', currentUser.$id);
+    
+    // Create a fresh admin client
+    const { databases } = await createAdminClient();
+    
+    // Get the file document
+    console.log('Fetching file document from database...');
+    const file = await databases.getDocument(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      fileId
+    );
+    
+    if (!file) {
+      console.error('File document not found');
+      return NextResponse.json(
+        { message: 'File not found' },
+        { status: 404 }
+      );
+    }
+    
+    console.log('File document found:', file.$id);
+    
+    // Check if user has access to the file
+    const hasAccess = 
+      file.ownerId === currentUser.$id || 
+      (file.sharedWith && file.sharedWith?.includes(currentUser.$id)) ||
+      currentUser.role === 'admin';
+    
+    if (!hasAccess) {
+      console.error('Access denied. User is not the owner, shared with, or is not an admin.');
+      return NextResponse.json(
+        { message: 'Access denied' },
+        { status: 403 }
+      );
+    }
+    
+    // Return safe file data
+    return NextResponse.json({
+      id: file.$id,
+      name: file.name,
+      type: file.type,
+      extension: file.extension,
+      size: file.size,
+      bucketFieldId: file.bucketFieldId,
+      bucketFileId: file.bucketFileId,
+      createdAt: file.createdAt,
+      updatedAt: file.updatedAt
+    });
+    
   } catch (error) {
-    console.error('Error getting Appwrite file ID from metadata:', error);
-    return null;
+    console.error('Error retrieving file details:', error);
+    return NextResponse.json(
+      { 
+        error: 'Error retrieving file details',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    );
   }
 } 

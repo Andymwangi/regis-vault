@@ -1,42 +1,50 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { departments } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
-import { account, getUserProfileById } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
 
+// Add type definitions for the parameters
 export async function PATCH(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: { departmentId: string } }
 ) {
   try {
-    // Check if user is authenticated with Appwrite
-    try {
-      const user = await account.get();
-      
-      // Verify admin role
-      const userProfileData = await getUserProfileById(user.$id);
-      if (!userProfileData || userProfileData.profile.role !== 'admin') {
-        return NextResponse.json({ message: 'Forbidden: Admin access required' }, { status: 403 });
-      }
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
+    
+    // Verify admin role
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ message: 'Forbidden: Admin access required' }, { status: 403 });
+    }
 
+    const { departmentId } = params;
     const { allocatedStorage } = await request.json();
-    const departmentId = params.id;
+    
+    if (!departmentId || allocatedStorage === undefined) {
+      return NextResponse.json(
+        { message: 'Missing required parameters' },
+        { status: 400 }
+      );
+    }
 
-    // Update department storage allocation
-    await db
-      .update(departments)
-      .set({ allocatedStorage })
-      .where(eq(departments.id, departmentId));
-
-    return NextResponse.json({ message: 'Storage allocation updated successfully' });
+    const { databases } = await createAdminClient();
+    
+    await databases.updateDocument(
+      fullConfig.databaseId,
+      fullConfig.departmentsCollectionId,
+      departmentId,
+      { allocatedStorage }
+    );
+    
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Error updating storage allocation:', error);
+    console.error('Error updating department storage allocation:', error);
     return NextResponse.json(
       { message: 'Internal server error' },
       { status: 500 }
     );
   }
-} 
+}

@@ -1,7 +1,7 @@
 'use client';
 
-import { SignInForm } from "@/components/auth/SignInForm";
 import { AuthBanner } from "@/components/auth/AuthBanner";
+import { StyledAuthForm } from "@/components/auth/StyledAuthForm";
 import { useEffect } from "react";
 
 export default function SignInPage() {
@@ -15,7 +15,7 @@ export default function SignInPage() {
     <div className="grid lg:grid-cols-2 min-h-screen">
       <AuthBanner />
       <div className="flex items-center justify-center p-8">
-        <SignInForm />
+        <StyledAuthForm type="sign-in" />
       </div>
     </div>
   );

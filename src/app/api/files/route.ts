@@ -1,17 +1,15 @@
 'use server';
 
 import { NextRequest, NextResponse } from "next/server";
-import { Query } from 'appwrite';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
-import { db } from "@/lib/db";
-import { files, users } from "@/server/db/schema/schema";
-import { eq, and, or, desc, sql } from "drizzle-orm";
+import { createAdminClient } from "@/lib/appwrite";
+import { fullConfig } from "@/lib/appwrite/config";
+import { Query } from "node-appwrite";
+import { getCurrentUser } from "@/lib/actions/user.actions";
 
 export async function GET(request: NextRequest) {
   try {
-    // Get the current user using Appwrite
-    const currentUser = await account.get();
-    
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
     if (!currentUser) {
       return NextResponse.json(
         { message: "Unauthorized" },
@@ -19,83 +17,56 @@ export async function GET(request: NextRequest) {
       );
     }
     
-    // Get user profile data
-    const userProfiles = await databases.listDocuments(
-      DATABASES.MAIN,
-      COLLECTIONS.DEPARTMENTS,
-      [
-        Query.equal('userId', sanitizeUserId(currentUser.$id))
-      ]
-    );
+    // Create Appwrite admin client
+    const { databases } = await createAdminClient();
     
-    if (userProfiles.documents.length === 0) {
-      return NextResponse.json({ message: 'User profile not found' }, { status: 404 });
-    }
-    
-    const userProfile = userProfiles.documents[0];
-
+    // Get query parameters
     const searchParams = request.nextUrl.searchParams;
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "10");
-    const type = searchParams.get("type");
-    const search = searchParams.get("search");
-    const offset = (page - 1) * limit;
-
-    // Base query conditions
-    const conditions = [
-      eq(files.status, 'active'),
-      or(
-        eq(files.userId, sql`${currentUser.$id}`),
-        eq(files.status, 'public')
-      )
+    const type = searchParams.get("type") || "";
+    const search = searchParams.get("search") || "";
+    
+    // Build Appwrite queries
+    const queries = [
+      Query.or([
+        Query.equal("ownerId", [currentUser.$id]),
+        Query.contains("sharedWith", [currentUser.$id])
+      ])
     ];
-
-    // Add type filter if provided
-    if (type) {
-      conditions.push(eq(files.type, type));
+    
+    // Add type filter if provided and not 'all'
+    if (type && type !== "all") {
+      queries.push(Query.equal("type", [type]));
     }
-
+    
     // Add search filter if provided
     if (search) {
-      conditions.push(sql`LOWER(${files.name}) LIKE LOWER(${'%' + search + '%'})`);
+      queries.push(Query.search("name", search));
     }
-
-    // Get total count
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(files)
-      .where(and(...conditions));
-
-    // Get files with pagination
-    const results = await db
-      .select({
-        id: files.id,
-        name: files.name,
-        type: files.type,
-        size: files.size,
-        url: files.url,
-        thumbnailUrl: files.thumbnailUrl,
-        status: files.status,
-        updatedAt: files.updatedAt,
-        createdAt: files.createdAt,
-        owner: {
-          id: users.id,
-          name: users.name,
-        },
-      })
-      .from(files)
-      .leftJoin(users, eq(files.userId, sql`${users.id}::uuid`))
-      .where(and(...conditions))
-      .orderBy(desc(files.updatedAt))
-      .limit(limit)
-      .offset(offset);
-
+    
+    // Add pagination
+    const offset = (page - 1) * limit;
+    queries.push(Query.limit(limit));
+    queries.push(Query.offset(offset));
+    
+    // Order by most recent first
+    queries.push(Query.orderDesc("$createdAt"));
+    
+    // Fetch files from Appwrite
+    const files = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      queries
+    );
+    
+    // Format the response
     return NextResponse.json({
-      files: results,
-      total: count,
+      files: files.documents,
+      total: files.total,
       page,
       limit,
-      totalPages: Math.ceil(count / limit),
+      totalPages: Math.ceil(files.total / limit),
     });
   } catch (error) {
     console.error("Error fetching files:", error);

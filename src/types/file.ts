@@ -29,15 +29,21 @@ export interface File {
   size: number;
   url: string;
   thumbnailUrl?: string;
-  userId: string;
+  ownerId: string;
   departmentId?: string;
   status: 'active' | 'archived' | 'deleted';
   createdAt: string;
   updatedAt: string;
   tags?: string[];
+  bucketFieldId?: string;
+  bucketFileId?: string;
+  extension?: string;
+  sharedWith?: string[];
   owner?: {
-    firstName: string;
-    lastName: string;
+    id?: string;
+    firstName?: string;
+    lastName?: string;
+    name?: string;
   };
   department?: {
     name: string;
@@ -46,6 +52,8 @@ export interface File {
     firstName: string;
     lastName: string;
   };
+  ext?: string;
+  isShared?: boolean;
 }
 
 export interface FileUploadResponse {

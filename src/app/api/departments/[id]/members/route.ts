@@ -1,38 +1,44 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { departments, users } from '@/server/db/schema/schema';
-import { eq } from 'drizzle-orm';
-import { account } from '@/lib/appwrite/config';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { getCurrentUser } from '@/lib/actions/user.actions';
+import { Query } from 'node-appwrite';
 
 export async function GET(
   request: Request,
   { params }: { params: { id: string } }
 ) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
+    const { databases } = await createAdminClient();
     const departmentId = params.id;
 
-    const results = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        role: users.role,
-      })
-      .from(users)
-      .where(eq(users.departmentId, departmentId))
-      .orderBy(users.name);
+    // Get users in this department
+    const departmentMembers = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      [
+        Query.equal('department', [departmentId]),
+        Query.orderAsc('fullName')
+      ]
+    );
 
-    return NextResponse.json({ members: results });
+    // Format the results
+    const members = departmentMembers.documents.map(user => ({
+      id: user.$id,
+      name: user.fullName,
+      email: user.email,
+      role: user.role
+    }));
+
+    return NextResponse.json({ members });
   } catch (error) {
     console.error('Error fetching department members:', error);
     return NextResponse.json(

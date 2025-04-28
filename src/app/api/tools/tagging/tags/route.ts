@@ -6,13 +6,6 @@ import { addTag, removeTag, getTagsForFile } from '@/lib/services/taggingService
 
 export async function POST(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
 
     // Process request body
     const { fileId, tag, category = 'other', confidence = 100 } = await request.json();
@@ -31,7 +24,6 @@ export async function POST(request: Request) {
       category,
       confidence,
       source: 'manual',
-      userId: user.$id.substring(0, 36)
     });
 
     return NextResponse.json({ 

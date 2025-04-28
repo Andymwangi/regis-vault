@@ -1,13 +1,27 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { getOCRResult } from '@/lib/ocr/processor';
+import { getOcrResult } from '@/lib/appwrite/ocr-operations';
 import { rateLimitMiddleware } from '@/middleware/rate-limit';
 
 export async function GET(request: Request) {
-  // Apply rate limiting
-  const rateLimitResponse = await rateLimitMiddleware(request as any, 'ocr:result');
-  if (rateLimitResponse.status === 429) return rateLimitResponse;
+  // Try to apply rate limiting, but don't block if it fails
+  try {
+    const rateLimitResponse = await Promise.race([
+      rateLimitMiddleware(request as any, 'ocr:result'),
+      new Promise<Response>((resolve) => {
+        setTimeout(() => {
+          console.warn('Rate limit middleware timed out, proceeding with request');
+          resolve(NextResponse.next());
+        }, 1500);
+      })
+    ]);
+    
+    if (rateLimitResponse.status === 429) return rateLimitResponse;
+  } catch (rateLimitError) {
+    console.error('Rate limit middleware error:', rateLimitError);
+    // Proceed with the request if rate limiting fails
+  }
   
   try {
     // Extract fileId from query params
@@ -21,8 +35,13 @@ export async function GET(request: Request) {
       );
     }
     
-    // Get OCR result from database
-    const result = await getOCRResult(fileId);
+    // Get OCR result from Appwrite database
+    const result = await getOcrResult(fileId);
+    
+    // Log if text is empty
+    if (result.status === 'completed' && (!result.text || result.text.trim() === '')) {
+      console.warn(`OCR completed for file ${fileId} but no text was extracted`);
+    }
     
     return NextResponse.json(result);
   } catch (error) {

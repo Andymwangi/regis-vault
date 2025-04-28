@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { account, getUserByEmail } from '@/lib/appwrite/config';
+import { account } from '@/lib/appwrite/config';
+import { getUserByEmail } from '@/lib/services/userService';
 import { useRouter } from 'next/navigation';
 
 type User = {

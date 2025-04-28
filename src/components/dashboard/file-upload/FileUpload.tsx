@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Upload, X, FileIcon } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { uploadFile, account, storage, STORAGE_BUCKETS } from '@/lib/appwrite/config';
+import { uploadFile } from '@/lib/appwrite/client-file-operations';
+import { account, storage, STORAGE_BUCKETS } from '@/lib/appwrite/config';
 
 interface UploadResponse {
   successfulUploads: any[];
@@ -69,10 +70,10 @@ export const FileUpload: FC<FileUploadProps> = ({
         const session = await account.get();
         currentUserId = session.$id;
         
-        // If still no departmentId, we need to fetch it
+        // If still no departmentId, we'll use a default value
         if (!currentDepartmentId) {
-          // This is a simplified approach - in a real app you'd fetch from your database
-          currentDepartmentId = session.department || "default";
+          // We don't have access to the department directly from the account object
+          currentDepartmentId = "default";
         }
       } catch (error) {
         toast.error("Authentication required", {
@@ -95,8 +96,7 @@ export const FileUpload: FC<FileUploadProps> = ({
         // Upload file using Appwrite SDK
         const uploadResult = await uploadFile(
           file,
-          currentUserId!,
-          currentDepartmentId!
+          '/dashboard/files'
         );
         
         successfulUploads.push(uploadResult);

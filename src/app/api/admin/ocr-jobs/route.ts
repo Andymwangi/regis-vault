@@ -1,8 +1,10 @@
 'use server';
 
 import { NextResponse } from 'next/server';
-import { account, databases, DATABASES, COLLECTIONS, sanitizeUserId } from '@/lib/appwrite/config';
-import { Query } from 'appwrite';
+import { createAdminClient } from '@/lib/appwrite';
+import { fullConfig } from '@/lib/appwrite/config';
+import { Query } from 'node-appwrite';
+import { getCurrentUser } from '@/lib/actions/user.actions';
 import { Redis } from '@upstash/redis';
 
 // Initialize Redis client
@@ -16,28 +18,15 @@ const getRedisClient = async () => {
 
 export async function GET(request: Request) {
   try {
-    // Check if user is authenticated with Appwrite
-    let user;
-    try {
-      user = await account.get();
-    } catch (error) {
+    // Check if user is authenticated
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
     // Check if user is an admin
-    try {
-      const userDocument = await databases.listDocuments(
-        DATABASES.MAIN,
-        COLLECTIONS.DEPARTMENTS,
-        [Query.equal('userId', sanitizeUserId(user.$id)), Query.equal('role', 'admin')]
-      );
-      
-      if (userDocument.documents.length === 0) {
-        return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
-      }
-    } catch (error) {
-      console.error('Error checking user role:', error);
-      return NextResponse.json({ error: 'Forbidden: Unable to verify admin access' }, { status: 403 });
+    if (currentUser.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
     }
     
     // Get Redis client
