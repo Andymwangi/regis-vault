@@ -15,23 +15,24 @@ console.log('Preparing build for Vercel deployment...');
 
 // Function to create directory if it doesn't exist
 function ensureDirectoryExists(dirPath) {
-  const directories = dirPath.split(path.sep);
-  let currentPath = '';
+  // Improved directory creation - handles both absolute and relative paths
+  if (fs.existsSync(dirPath)) {
+    return;
+  }
   
-  directories.forEach(dir => {
-    currentPath = path.join(currentPath, dir);
-    if (!fs.existsSync(currentPath)) {
-      fs.mkdirSync(currentPath);
-    }
-  });
+  // Create parent directory first
+  ensureDirectoryExists(path.dirname(dirPath));
+  
+  // Then create this directory
+  fs.mkdirSync(dirPath);
+  console.log(`Created directory: ${dirPath}`);
 }
 
 // Function to create backup of a file if it exists
 function backupFileIfExists(filePath) {
-  const fullPath = path.join(process.cwd(), filePath);
-  if (fs.existsSync(fullPath)) {
-    const backupPath = `${fullPath}.bak`;
-    fs.copyFileSync(fullPath, backupPath);
+  if (fs.existsSync(filePath)) {
+    const backupPath = `${filePath}.bak`;
+    fs.copyFileSync(filePath, backupPath);
     console.log(`Backed up ${filePath} to ${backupPath}`);
     return true;
   }
@@ -58,16 +59,18 @@ for (let i = 0; i < filesToStub.length; i++) {
   const filePath = filesToStub[i];
   console.log(`Processing: ${filePath}`);
   
+  // Use absolute paths throughout
+  const fullPath = path.resolve(process.cwd(), filePath);
+  
   // Create backup of existing file
-  backupFileIfExists(filePath);
+  backupFileIfExists(fullPath);
   
   // Create directory structure if needed
-  const fullPath = path.join(process.cwd(), filePath);
   ensureDirectoryExists(path.dirname(fullPath));
   
   // Write the stub file
   fs.writeFileSync(fullPath, routeStubContent);
-  console.log(`Created stub for: ${filePath}`);
+  console.log(`Created stub for: ${fullPath}`);
 }
 
-console.log('Build preparation complete!'); 
+console.log('Build preparation complete!');
