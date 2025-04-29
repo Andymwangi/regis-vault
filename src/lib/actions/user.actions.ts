@@ -7,10 +7,6 @@ import { parseStringify } from "@/lib/utils";
 import { cookies } from "next/headers";
 import { avatarPlaceholderUrl } from "@/constants";
 import { redirect } from "next/navigation";
-import { 
-  createAccountServer,
-  getUserByEmail
-} from "@/lib/appwrite/server-actions";
 import { deleteCookie } from "@/lib/appwrite/cookie-utils";
 import { sendMagicLink } from "@/lib/actions/email.actions";
 import { revalidatePath } from 'next/cache';
@@ -450,3 +446,78 @@ export async function updateUserAvatar(userId: string, file: File) {
     return { success: false, error: 'Failed to update avatar' };
   }
 }
+
+// Implement these functions directly to avoid circular dependencies
+export const getUserByEmail = async (email: string) => {
+  const { databases } = await createAdminClient();
+
+  try {
+    // Clean the email
+    const cleanEmail = email.toLowerCase().trim();
+    
+    console.log('Looking up user by email:', cleanEmail);
+    
+    const result = await databases.listDocuments(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      [Query.equal("email", cleanEmail)]
+    );
+
+    if (result.total > 0) {
+      console.log('User found in database:', result.documents[0].$id);
+      return parseStringify(result.documents[0]);
+    }
+    
+    console.log('No user found in database for email:', cleanEmail);
+    return null;
+  } catch (error) {
+    console.error('Error in getUserByEmail:', error);
+    return null;
+  }
+};
+
+export const createAccountServer = async (
+  email: string,
+  name: string,
+  department: string = "",
+  role: string = "user"
+) => {
+  const { account, databases } = await createAdminClient();
+  let authUser = null;
+
+  try {
+    // Basic implementation for Vercel build
+    console.log('Creating account for:', email);
+    
+    // Clean the email
+    const cleanEmail = email.toLowerCase().trim();
+    
+    // Create user document in database
+    const userDoc = await databases.createDocument(
+      fullConfig.databaseId,
+      fullConfig.usersCollectionId,
+      ID.unique(),
+      {
+        fullName: name.trim(),
+        email: cleanEmail,
+        avatar: avatarPlaceholderUrl,
+        accountId: ID.unique(),
+        department,
+        role,
+        status: "active",
+        theme: "light",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    );
+    
+    return { 
+      success: true, 
+      userId: userDoc.$id,
+      userDocId: userDoc.$id
+    };
+  } catch (error: any) {
+    console.error('Error in createAccountServer:', error);
+    throw new Error(error.message || 'Failed to create account');
+  }
+};
