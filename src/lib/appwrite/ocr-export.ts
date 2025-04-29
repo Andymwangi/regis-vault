@@ -10,7 +10,27 @@ import { getCurrentUser } from '@/lib/actions/user.actions';
 import PDFDocument from 'pdfkit';
 import * as docx from 'docx';
 import { Packer, Document, Paragraph, TextRun } from 'docx';
-import { jsPDF } from 'jspdf';
+// Import our mock implementation for server-side
+import { createJsPDF } from './ocr-mocks.js';
+
+// Conditionally use real jsPDF in development but mock in production
+let jsPDF: { new(): any };
+
+// In development, use the real jsPDF library
+if (process.env.NODE_ENV === 'development') {
+  try {
+    const realJsPDF = require('jspdf');
+    jsPDF = realJsPDF.jsPDF;
+    console.log('Using real jsPDF in development');
+  } catch (e) {
+    console.warn('Could not load real jsPDF, falling back to mock');
+    jsPDF = createJsPDF as unknown as { new(): any };
+  }
+} else {
+  // In production (Vercel), use the mock to avoid navigator errors
+  jsPDF = createJsPDF as unknown as { new(): any };
+  console.log('Using mock jsPDF in production');
+}
 
 /**
  * Export OCR results as a PDF file
@@ -156,26 +176,28 @@ async function createPdf(text: string, title: string): Promise<Buffer> {
     subject: 'OCR Export'
   });
 
+  // Get page width - should work with both real and mock
+  const pageWidth = doc.internal.pageSize.getWidth();
+  
   // Add title
   doc.setFontSize(18);
-  doc.text(title, doc.internal.pageSize.getWidth() / 2, 20, { align: 'center' });
+  doc.text(title, pageWidth / 2, 20, { align: 'center' });
 
   // Add creation date - use ISO string to avoid navigator dependency
   const currentDate = new Date().toISOString().split('T')[0];
   doc.setFontSize(10);
-  doc.text(`Created on: ${currentDate}`, 
-    doc.internal.pageSize.getWidth() / 2, 30, 
-    { align: 'center' });
+  doc.text(`Created on: ${currentDate}`, pageWidth / 2, 30, { align: 'center' });
 
   // Add content
   doc.setFontSize(12);
   
   // Split text into lines to handle pagination
-  const lines = doc.splitTextToSize(text, doc.internal.pageSize.getWidth() - 20);
+  const lines = doc.splitTextToSize(text, pageWidth - 20);
   doc.text(lines, 10, 50);
 
   // Convert to buffer
-  const pdfBuffer = Buffer.from(doc.output('arraybuffer'));
+  const pdfData = doc.output('arraybuffer');
+  const pdfBuffer = Buffer.from(pdfData);
   return pdfBuffer;
 }
 
