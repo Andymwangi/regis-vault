@@ -160,9 +160,10 @@ async function createPdf(text: string, title: string): Promise<Buffer> {
   doc.setFontSize(18);
   doc.text(title, doc.internal.pageSize.getWidth() / 2, 20, { align: 'center' });
 
-  // Add creation date
+  // Add creation date - use ISO string to avoid navigator dependency
+  const currentDate = new Date().toISOString().split('T')[0];
   doc.setFontSize(10);
-  doc.text(`Created on: ${new Date().toLocaleDateString()}`, 
+  doc.text(`Created on: ${currentDate}`, 
     doc.internal.pageSize.getWidth() / 2, 30, 
     { align: 'center' });
 
@@ -208,11 +209,12 @@ async function createDocx(text: string, title: string): Promise<Buffer> {
     }
   });
   
-  // Create date paragraph
+  // Create date paragraph - use ISO string to avoid navigator dependency
+  const currentDate = new Date().toISOString().split('T')[0];
   const dateParagraph = new Paragraph({
     children: [
       new TextRun({
-        text: `Created on: ${new Date().toLocaleDateString()}`,
+        text: `Created on: ${currentDate}`,
         size: 20 // 10pt font
       })
     ],
