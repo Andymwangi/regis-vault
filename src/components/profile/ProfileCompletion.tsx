@@ -31,7 +31,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { updateUserDepartment, updateUserRole } from "@/lib/appwrite/server-actions";
+import { updateUserDepartment, updateUserRole } from "@/lib/actions/user.actions";
 
 const profileCompletionSchema = z.object({
   department: z.string().min(1, "Please select a department"),

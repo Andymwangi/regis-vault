@@ -21,6 +21,14 @@ const nextConfig = {
       };
     }
     
+    // Add explicit aliases for problematic imports on Vercel
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      '@/middleware': require('path').resolve(__dirname, './src/middleware'),
+      '@/lib/actions': require('path').resolve(__dirname, './src/lib/actions'),
+      '@/lib/appwrite': require('path').resolve(__dirname, './src/lib/appwrite'),
+    };
+    
     return config;
   },
   // Ensure external packages with server-side functionality are handled properly

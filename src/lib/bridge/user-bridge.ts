@@ -1,7 +1,11 @@
-import { createAccount, signOut } from "@/lib/actions/user.actions";
+import { 
+  createAccount, 
+  signOut, 
+  updateUserRole, 
+  updateUserDepartment, 
+  updateUserSettings 
+} from "@/lib/actions/user.actions";
 import { sendMagicLink } from "@/lib/actions/email.actions";
-import { updateUserRole, updateUserDepartment } from '@/lib/appwrite/server-actions';
-import { updateUserSettings } from '@/lib/actions/user.actions';
 
 // Convert Appwrite user format to the format expected by your UI
 export const convertAppwriteUserToUIFormat = (user: any) => {
