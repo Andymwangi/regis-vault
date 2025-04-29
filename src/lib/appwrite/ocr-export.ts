@@ -10,27 +10,7 @@ import { getCurrentUser } from '@/lib/actions/user.actions';
 import PDFDocument from 'pdfkit';
 import * as docx from 'docx';
 import { Packer, Document, Paragraph, TextRun } from 'docx';
-// Import our mock implementation for server-side
-import { createJsPDF } from './ocr-mocks.js';
-
-// Conditionally use real jsPDF in development but mock in production
-let jsPDF: { new(): any };
-
-// In development, use the real jsPDF library
-if (process.env.NODE_ENV === 'development') {
-  try {
-    const realJsPDF = require('jspdf');
-    jsPDF = realJsPDF.jsPDF;
-    console.log('Using real jsPDF in development');
-  } catch (e) {
-    console.warn('Could not load real jsPDF, falling back to mock');
-    jsPDF = createJsPDF as unknown as { new(): any };
-  }
-} else {
-  // In production (Vercel), use the mock to avoid navigator errors
-  jsPDF = createJsPDF as unknown as { new(): any };
-  console.log('Using mock jsPDF in production');
-}
+// No static jsPDF import - we'll import it dynamically when needed
 
 /**
  * Export OCR results as a PDF file
@@ -165,40 +145,56 @@ export async function exportOcrAsDocx(
  * Create a PDF buffer from OCR text
  */
 async function createPdf(text: string, title: string): Promise<Buffer> {
-  // Create new document
-  const doc = new jsPDF();
-
-  // Add metadata
-  doc.setProperties({
-    title: title,
-    author: 'Regis Vault OCR',
-    creator: 'Regis Vault OCR',
-    subject: 'OCR Export'
-  });
-
-  // Get page width - should work with both real and mock
-  const pageWidth = doc.internal.pageSize.getWidth();
+  // For Vercel, don't even try to use jsPDF
+  if (process.env.VERCEL === "1") {
+    console.log("Vercel environment detected, using text buffer instead of PDF");
+    // Create a simple text buffer
+    const content = `${title}\n\nCreated on: ${new Date().toISOString().split('T')[0]}\n\n${text}`;
+    return Buffer.from(content, 'utf-8');
+  }
   
-  // Add title
-  doc.setFontSize(18);
-  doc.text(title, pageWidth / 2, 20, { align: 'center' });
-
-  // Add creation date - use ISO string to avoid navigator dependency
-  const currentDate = new Date().toISOString().split('T')[0];
-  doc.setFontSize(10);
-  doc.text(`Created on: ${currentDate}`, pageWidth / 2, 30, { align: 'center' });
-
-  // Add content
-  doc.setFontSize(12);
-  
-  // Split text into lines to handle pagination
-  const lines = doc.splitTextToSize(text, pageWidth - 20);
-  doc.text(lines, 10, 50);
-
-  // Convert to buffer
-  const pdfData = doc.output('arraybuffer');
-  const pdfBuffer = Buffer.from(pdfData);
-  return pdfBuffer;
+  try {
+    // For local development, try to use jsPDF
+    // Only import jsPDF in a try block to avoid build errors
+    const { jsPDF } = await import('jspdf');
+    const doc = new jsPDF();
+    
+    // Add metadata
+    doc.setProperties({
+      title: title,
+      author: 'Regis Vault OCR',
+      creator: 'Regis Vault OCR',
+      subject: 'OCR Export'
+    });
+    
+    // Get page width
+    const pageWidth = doc.internal.pageSize.getWidth();
+    
+    // Add title
+    doc.setFontSize(18);
+    doc.text(title, pageWidth / 2, 20, { align: 'center' });
+    
+    // Add creation date
+    const currentDate = new Date().toISOString().split('T')[0];
+    doc.setFontSize(10);
+    doc.text(`Created on: ${currentDate}`, pageWidth / 2, 30, { align: 'center' });
+    
+    // Add content
+    doc.setFontSize(12);
+    
+    // Split text into lines to handle pagination
+    const lines = doc.splitTextToSize(text, pageWidth - 20);
+    doc.text(lines, 10, 50);
+    
+    // Convert to buffer
+    const pdfData = doc.output('arraybuffer');
+    return Buffer.from(pdfData as ArrayBuffer);
+  } catch (error) {
+    // If anything fails, return a simple text buffer
+    console.error('Error creating PDF, falling back to text buffer:', error);
+    const content = `${title}\n\nCreated on: ${new Date().toISOString().split('T')[0]}\n\n${text}`;
+    return Buffer.from(content, 'utf-8');
+  }
 }
 
 /**
