@@ -1,3 +1,4 @@
+
 "use server";
 
 import { createAdminClient, createSessionClient } from "@/lib/appwrite";
@@ -8,7 +9,11 @@ import { constructFileUrl, getFileType, parseStringify } from "@/lib/utils";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/actions/user.actions";
 
+
+
 type FileType = "image" | "document" | "video" | "audio" | "other";
+
+
 
 interface UploadFileProps {
   file: File;
@@ -28,10 +33,15 @@ interface GetFilesProps {
 
 interface RenameFileProps {
   fileId: string;
-  name: string;
-  extension: string;
+  newName: string;
   path: string;
 }
+interface RenameFileResponse {
+  success: boolean;
+  file?: any;
+  error?: string;
+}
+
 
 interface UpdateFileUsersProps {
   fileId: string;
@@ -172,31 +182,241 @@ export const getFiles = async ({
     handleError(error, "Failed to get files");
   }
 };
+
+// Utility functions for file name handling (moved inside the main function)
+const sanitizeFileName = (fileName: string): string => {
+  // Remove or replace invalid characters
+  const sanitized = fileName
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '') // Remove invalid characters
+    .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+    .trim(); // Remove leading/trailing spaces
+
+  // Ensure the name isn't too long (most filesystems support up to 255 characters)
+  const maxLength = 250; // Leave some room for extension
+  return sanitized.length > maxLength ? sanitized.substring(0, maxLength) : sanitized;
+};
+
+// Extract file extension from filename
+const extractFileExtension = (fileName: string): string => {
+  const lastDotIndex = fileName.lastIndexOf('.');
+  if (lastDotIndex === -1 || lastDotIndex === 0) {
+    return ''; // No extension or hidden file
+  }
+  return fileName.substring(lastDotIndex + 1).toLowerCase();
+};
+
+// Ensure the file name has the correct extension
+const ensureFileExtension = (baseName: string, originalExtension: string): string => {
+  if (!originalExtension) {
+    return baseName;
+  }
+
+  const baseNameLower = baseName.toLowerCase();
+  const extensionLower = originalExtension.toLowerCase();
+
+  // Check if the new name already has the correct extension
+  if (baseNameLower.endsWith(`.${extensionLower}`)) {
+    return baseName;
+  }
+
+  // Check if the new name has a different extension
+  const lastDotIndex = baseName.lastIndexOf('.');
+  if (lastDotIndex > 0) {
+    // Replace the existing extension with the original one
+    const nameWithoutExtension = baseName.substring(0, lastDotIndex);
+    return `${nameWithoutExtension}.${originalExtension}`;
+  }
+
+  // Add the original extension
+  return `${baseName}.${originalExtension}`;
+};
+
 export const renameFile = async ({
   fileId,
-  name,
-  extension,
+  newName,
   path,
-}: RenameFileProps) => {
+}: RenameFileProps): Promise<RenameFileResponse> => {
   const { databases } = await createAdminClient();
 
   try {
-    const newName = `${name}.${extension}`;
+    // Get current user
+    const currentUser = await getCurrentUser();
+    if (!currentUser) {
+      throw new Error("User not authenticated");
+    }
+
+    // Validate inputs
+    if (!fileId) {
+      throw new Error("File ID is required");
+    }
+
+    if (!newName || newName.trim().length === 0) {
+      throw new Error("New file name is required");
+    }
+
+    // Sanitize the new name
+    const sanitizedName = sanitizeFileName(newName.trim());
+    if (!sanitizedName) {
+      throw new Error("Invalid file name");
+    }
+
+    // Get the current file to check permissions and get extension
+    const currentFile = await databases.getDocument(
+      fullConfig.databaseId,
+      fullConfig.filesCollectionId,
+      fileId
+    );
+
+    // Check if user has permission to rename this file
+    const hasPermission = 
+      currentFile.ownerId === currentUser.$id || 
+      currentUser.role === 'admin' ||
+      (currentFile.sharedWith && currentFile.sharedWith.includes(currentUser.$id));
+
+    if (!hasPermission) {
+      throw new Error("You don't have permission to rename this file");
+    }
+
+    // Extract current extension from the file name
+    const currentExtension = extractFileExtension(currentFile.name);
+    
+    // Create the final name with proper extension
+    const finalName = ensureFileExtension(sanitizedName, currentExtension);
+
+    // Check if the new name is different from current name
+    if (finalName === currentFile.name) {
+      return {
+        success: true,
+        file: parseStringify(currentFile),
+      };
+    }
+
+    // Update the file document
     const updatedFile = await databases.updateDocument(
       fullConfig.databaseId,
       fullConfig.filesCollectionId,
       fileId,
       {
-        name: newName,
+        name: finalName,
         updatedAt: new Date().toISOString(),
-      },
+      }
     );
 
+    // Revalidate the path to refresh the UI
     revalidatePath(path);
-    return parseStringify(updatedFile);
-  } catch (error) {
-    handleError(error, "Failed to rename file");
+
+    return {
+      success: true,
+      file: parseStringify(updatedFile),
+    };
+  } catch (error: any) {
+    console.error("Error renaming file:", error);
+    return {
+      success: false,
+      error: error.message || "Failed to rename file",
+    };
   }
+};
+
+export const renameMultipleFiles = async (
+  files: Array<{ fileId: string; newName: string }>,
+  path: string
+): Promise<{ success: boolean; results: Array<{ fileId: string; success: boolean; error?: string }> }> => {
+  const results = [];
+
+  for (const file of files) {
+    try {
+      const result = await renameFile({
+        fileId: file.fileId,
+        newName: file.newName,
+        path,
+      });
+
+      results.push({
+        fileId: file.fileId,
+        success: result.success,
+        error: result.error,
+      });
+    } catch (error: any) {
+      results.push({
+        fileId: file.fileId,
+        success: false,
+        error: error.message || "Failed to rename file",
+      });
+    }
+  }
+
+  // Check if all operations were successful
+  const allSuccessful = results.every(result => result.success);
+
+  return {
+    success: allSuccessful,
+    results,
+  };
+};
+
+/**
+ * Validate if a file name is valid
+ */
+export const validateFileName = async (fileName: string): Promise<{ isValid: boolean; error?: string }> => {
+  if (!fileName || fileName.trim().length === 0) {
+    return { isValid: false, error: "File name cannot be empty" };
+  }
+
+  const sanitized = sanitizeFileName(fileName);
+  if (!sanitized) {
+    return { isValid: false, error: "File name contains only invalid characters" };
+  }
+
+  if (sanitized.length > 250) {
+    return { isValid: false, error: "File name is too long (maximum 250 characters)" };
+  }
+
+  // Check for reserved names (Windows)
+  const reservedNames = [
+    'CON', 'PRN', 'AUX', 'NUL',
+    'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+    'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+  ];
+
+  const nameWithoutExtension = sanitized.split('.')[0].toUpperCase();
+  if (reservedNames.includes(nameWithoutExtension)) {
+    return { isValid: false, error: "File name is reserved by the system" };
+  }
+
+  return { isValid: true };
+};
+
+/**
+ * Get suggested file names when there's a conflict
+ */
+export const getSuggestedFileNames = async (originalName: string, existingNames: string[]): Promise<string[]> => {
+  const suggestions = [];
+  const extension = extractFileExtension(originalName);
+  const baseName = originalName.replace(`.${extension}`, '');
+
+  // Try adding numbers
+  for (let i = 1; i <= 10; i++) {
+    const suggestion = extension 
+      ? `${baseName} (${i}).${extension}`
+      : `${baseName} (${i})`;
+    
+    if (!existingNames.includes(suggestion)) {
+      suggestions.push(suggestion);
+    }
+  }
+
+  // Try adding timestamp
+  const timestamp = new Date().toISOString().slice(0, 16).replace(/[:.]/g, '-');
+  const timestampSuggestion = extension
+    ? `${baseName} ${timestamp}.${extension}`
+    : `${baseName} ${timestamp}`;
+  
+  if (!existingNames.includes(timestampSuggestion)) {
+    suggestions.push(timestampSuggestion);
+  }
+
+  return suggestions.slice(0, 5); // Return up to 5 suggestions
 };
 
 export const updateFileUsers = async ({

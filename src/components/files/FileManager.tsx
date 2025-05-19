@@ -3,10 +3,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { File } from '@/types/file';
 import { FileUpload } from './FileUpload';
+import { FileRenameDialog } from '../dashboard/file-rename/FileRename';
 import { Button } from '@/components/ui/button';
-import { Plus, Download, Share2, Trash2, Users, Building2, HelpCircle } from 'lucide-react';
+import { Plus, Download, Share2, Trash2, Users, Building2, HelpCircle, Edit3 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFiles, deleteFileBridge, shareFileBridge } from '@/lib/bridge/file-bridge';
+import { getFiles, deleteFileBridge, shareFileBridge, renameFileBridge } from '@/lib/bridge/file-bridge';
 import { logActivity } from '@/lib/bridge/activity-bridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -21,6 +22,7 @@ interface AppwriteFile extends File {
   bucketFieldId?: string;
   lastViewed?: string;
   sharedWith?: string[];
+  extension?: string;
 }
 
 interface FileManagerProps {
@@ -40,6 +42,10 @@ export function FileManager({ onFileDeleted }: FileManagerProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<AppwriteFile | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  
+  // Rename dialog state
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [fileToRename, setFileToRename] = useState<AppwriteFile | null>(null);
 
   const { showHelp } = useAssistant();
 
@@ -85,6 +91,37 @@ export function FileManager({ onFileDeleted }: FileManagerProps) {
     };
     fetchDepartments();
   }, [fetchFilesData]);
+
+  const handleRename = async (fileId: string) => {
+    const file = files.find(f => f.id === fileId);
+    if (!file) {
+      toast.error('File not found in current list');
+      return;
+    }
+    setFileToRename(file);
+    setRenameDialogOpen(true);
+  };
+
+  const handleRenameSubmit = async (fileId: string, newName: string, extension: string) => {
+    try {
+      const updatedFile = await renameFileBridge(fileId, newName, extension);
+      
+      // Update the local files state
+      setFiles(files.map(file => 
+        file.id === fileId 
+          ? { ...file, name: `${newName}.${extension}` }
+          : file
+      ));
+      
+      // Log the activity
+      await logActivity('FILE_RENAME', `Renamed file to: ${newName}.${extension}`, fileId);
+      
+      toast.success('File renamed successfully');
+    } catch (error: any) {
+      console.error('Error renaming file:', error);
+      throw error; // Re-throw to be handled by the dialog
+    }
+  };
 
   const handleShare = async (fileId: string) => {
     const file = files.find(f => f.id === fileId);
@@ -279,14 +316,25 @@ export function FileManager({ onFileDeleted }: FileManagerProps) {
                       size="icon" 
                       onClick={() => handleDownload(file.id)}
                       className="h-8 w-8 text-gray-400 hover:text-white"
+                      title="Download file"
                     >
                       <Download className="h-4 w-4" />
                     </Button>
                     <Button 
                       variant="ghost" 
                       size="icon" 
+                      onClick={() => handleRename(file.id)}
+                      className="h-8 w-8 text-gray-400 hover:text-white"
+                      title="Rename file"
+                    >
+                      <Edit3 className="h-4 w-4" />
+                    </Button>
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
                       onClick={() => handleShare(file.id)}
                       className="h-8 w-8 text-gray-400 hover:text-white"
+                      title="Share file"
                     >
                       <Share2 className="h-4 w-4" />
                     </Button>
@@ -295,7 +343,8 @@ export function FileManager({ onFileDeleted }: FileManagerProps) {
                       size="sm" 
                       onClick={() => showHelp('sharing')}
                       className="text-gray-400 hover:text-white"
-                      >
+                      title="Get help with sharing"
+                    >
                       <HelpCircle className="h-4 w-4 mr-1" />
                     </Button>
                     <Button 
@@ -303,6 +352,7 @@ export function FileManager({ onFileDeleted }: FileManagerProps) {
                       size="icon" 
                       onClick={() => handleDelete(file.id)}
                       className="h-8 w-8 text-gray-400 hover:text-white"
+                      title="Delete file"
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -313,6 +363,22 @@ export function FileManager({ onFileDeleted }: FileManagerProps) {
           </div>
         )}
       </div>
+
+      {/* Rename Dialog */}
+      <FileRenameDialog
+        file={fileToRename ? {
+          id: fileToRename.id,
+          name: fileToRename.name,
+          extension: fileToRename.extension,
+          type: fileToRename.type
+        } : null}
+        isOpen={renameDialogOpen}
+        onClose={() => {
+          setRenameDialogOpen(false);
+          setFileToRename(null);
+        }}
+        onRename={handleRenameSubmit}
+      />
 
       {/* Share Dialog */}
       <Dialog open={shareDialogOpen} onOpenChange={setShareDialogOpen}>

@@ -2,7 +2,7 @@
 
 import { NextResponse } from 'next/server';
 import { getOcrResult } from '@/lib/appwrite/ocr-operations';
-import { rateLimitMiddleware } from '@/middleware/rate-limit';
+import { rateLimitMiddleware } from '@/middlewares/rate-limit';
 
 export async function GET(request: Request) {
   // Try to apply rate limiting, but don't block if it fails

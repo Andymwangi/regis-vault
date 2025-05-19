@@ -186,11 +186,10 @@ export const deleteFileBridge = async (fileId: string, bucketFileId?: string) =>
 };
 
 // Rename file wrapper
-export const renameFileBridge = async (fileId: string, name: string, extension: string, path: string = "/dashboard/files") => {
+export const renameFileBridge = async (fileId: string, newName: string, path: string = "/dashboard/files") => {
   const result = await renameFile({
     fileId,
-    name,
-    extension,
+    newName,
     path
   });
   

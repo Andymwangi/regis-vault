@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/appwrite';
 import { fullConfig } from '@/lib/appwrite/config';
 import { getCurrentUser } from '@/lib/actions/user.actions';
-import { rateLimitMiddleware } from '@/middleware/rate-limit';
+import { rateLimitMiddleware } from '@/middlewares/rate-limit';
 import { Query } from 'node-appwrite';
 
 export async function GET(request: Request) {

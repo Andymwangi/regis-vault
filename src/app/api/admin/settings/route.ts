@@ -5,7 +5,7 @@ import { createAdminClient } from '@/lib/appwrite';
 import { fullConfig } from '@/lib/appwrite/config';
 import { getCurrentUser } from '@/lib/actions/user.actions';
 import { Query, ID } from 'node-appwrite';
-import { rateLimitMiddleware } from '@/middleware/rate-limit';
+import { rateLimitMiddleware } from '@/middlewares/rate-limit';
 
 // Default settings if none exist in the database
 const defaultSettings = {

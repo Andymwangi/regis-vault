@@ -7,7 +7,7 @@ import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import os from 'os';
 import { promisify } from 'util';
-import { rateLimitMiddleware } from '@/middleware/rate-limit';
+import { rateLimitMiddleware } from '@/middlewares/rate-limit';
 import { createAdminClient } from '@/lib/appwrite';
 import { fullConfig } from '@/lib/appwrite/config';
 import { ID, Query } from 'node-appwrite';
