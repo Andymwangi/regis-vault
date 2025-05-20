@@ -58,11 +58,11 @@ export async function POST(request: Request) {
     console.error('Error exporting OCR result:', error);
     
     return NextResponse.json(
-      { 
+      {
         error: 'Failed to export OCR result',
         message: error instanceof Error ? error.message : 'Unknown error'
       },
       { status: 500 }
     );
   }
-} 
+}

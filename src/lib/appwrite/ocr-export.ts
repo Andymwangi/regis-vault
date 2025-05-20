@@ -10,7 +10,6 @@ import { getCurrentUser } from '@/lib/actions/user.actions';
 import PDFDocument from 'pdfkit';
 import * as docx from 'docx';
 import { Packer, Document, Paragraph, TextRun } from 'docx';
-// No static jsPDF import - we'll import it dynamically when needed
 
 /**
  * Export OCR results as a PDF file
@@ -145,50 +144,55 @@ export async function exportOcrAsDocx(
  * Create a PDF buffer from OCR text
  */
 async function createPdf(text: string, title: string): Promise<Buffer> {
-  // For Vercel, don't even try to use jsPDF
-  if (process.env.VERCEL === "1") {
-    console.log("Vercel environment detected, using text buffer instead of PDF");
-    // Create a simple text buffer
-    const content = `${title}\n\nCreated on: ${new Date().toISOString().split('T')[0]}\n\n${text}`;
-    return Buffer.from(content, 'utf-8');
-  }
-  
+  // Always use PDFKit for server-side PDF generation
+  // Do not try to use jsPDF as it uses browser APIs
   try {
-    // For local development, try to use jsPDF
-    // Only import jsPDF in a try block to avoid build errors
-    const { jsPDF } = await import('jspdf');
-    const doc = new jsPDF();
+    // Create a PDF document using PDFKit (Node.js compatible)
+    const doc = new PDFDocument();
+    const chunks: Buffer[] = [];
     
-    // Add metadata
-    doc.setProperties({
-      title: title,
-      author: 'Regis Vault OCR',
-      creator: 'Regis Vault OCR',
-      subject: 'OCR Export'
+    // Collect data chunks
+    doc.on('data', (chunk) => {
+      chunks.push(chunk);
     });
     
-    // Get page width
-    const pageWidth = doc.internal.pageSize.getWidth();
+    // Add metadata
+    doc.info.Title = title;
+    doc.info.Author = 'Regis Vault OCR';
+    doc.info.Creator = 'Regis Vault OCR';
+    doc.info.Subject = 'OCR Export';
     
     // Add title
-    doc.setFontSize(18);
-    doc.text(title, pageWidth / 2, 20, { align: 'center' });
+    doc.fontSize(18);
+    doc.text(title, { align: 'center' });
+    doc.moveDown();
     
     // Add creation date
     const currentDate = new Date().toISOString().split('T')[0];
-    doc.setFontSize(10);
-    doc.text(`Created on: ${currentDate}`, pageWidth / 2, 30, { align: 'center' });
+    doc.fontSize(10);
+    doc.text(`Created on: ${currentDate}`, { align: 'center' });
+    doc.moveDown(2);
     
     // Add content
-    doc.setFontSize(12);
+    doc.fontSize(12);
+    doc.text(text, {
+      align: 'left',
+      width: doc.page.width - 100
+    });
     
-    // Split text into lines to handle pagination
-    const lines = doc.splitTextToSize(text, pageWidth - 20);
-    doc.text(lines, 10, 50);
-    
-    // Convert to buffer
-    const pdfData = doc.output('arraybuffer');
-    return Buffer.from(pdfData as ArrayBuffer);
+    // End the document to trigger the 'end' event
+    return new Promise<Buffer>((resolve, reject) => {
+      doc.on('end', () => {
+        const pdfBuffer = Buffer.concat(chunks);
+        resolve(pdfBuffer);
+      });
+      
+      doc.on('error', (err) => {
+        reject(err);
+      });
+      
+      doc.end();
+    });
   } catch (error) {
     // If anything fails, return a simple text buffer
     console.error('Error creating PDF, falling back to text buffer:', error);
@@ -257,4 +261,4 @@ async function createDocx(text: string, title: string): Promise<Buffer> {
   
   // Generate the buffer
   return await Packer.toBuffer(doc);
-} 
+}
