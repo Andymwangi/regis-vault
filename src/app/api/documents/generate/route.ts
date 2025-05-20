@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import * as docx from 'docx';
-import { Buffer } from 'buffer';
+import type PDFKit from 'pdfkit';
+import { Buffer } from 'node:buffer';
 
 // Function to handle document generation via API endpoint
 export async function POST(request: NextRequest) {
@@ -18,11 +18,13 @@ export async function POST(request: NextRequest) {
     
     if (format === 'pdf') {
       // Dynamically import PDFKit only in this API route
-      const PDFKit = (await import('pdfkit')).default;
-      buffer = await createPdf(PDFKit, text, title);
+      const PDFDocument = (await import('pdfkit')).default;
+      buffer = await createPdf(PDFDocument, text, title);
       contentType = 'application/pdf';
     } else if (format === 'docx') {
-      buffer = await createDocx(text, title);
+      // Dynamically import docx only in this API route
+      const docx = await import('docx');
+      buffer = await createDocx(docx, text, title);
       contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     } else {
       return NextResponse.json({ error: 'Invalid format' }, { status: 400 });
@@ -41,14 +43,28 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// Define a proper type for PDFKit document
+interface PDFDocument extends PDFKit.PDFDocument {
+  info: {
+    Title: string;
+    Author: string;
+    Creator: string;
+    Subject: string;
+  };
+}
+
 // Create PDF using PDFKit
-async function createPdf(PDFKit: any, text: string, title: string): Promise<Buffer> {
+async function createPdf(
+  PDFDocumentConstructor: typeof PDFKit,
+  text: string, 
+  title: string
+): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFKit();
-    const chunks: Uint8Array[] = [];
+    const doc = new PDFDocumentConstructor() as PDFDocument;
+    const chunks: Buffer[] = [];
     
     // Collect data chunks
-    doc.on('data', (chunk: Uint8Array) => {
+    doc.on('data', (chunk: Buffer) => {
       chunks.push(chunk);
     });
     
@@ -90,7 +106,11 @@ async function createPdf(PDFKit: any, text: string, title: string): Promise<Buff
 }
 
 // Create DOCX using docx library
-async function createDocx(text: string, title: string): Promise<Buffer> {
+async function createDocx(
+  docx: typeof import('docx'),
+  text: string, 
+  title: string
+): Promise<Buffer> {
   // Create paragraphs from text (split by newlines)
   const paragraphs = text.split('\n').map((line: string) => {
     return new docx.Paragraph({
