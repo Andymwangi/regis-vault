@@ -8,7 +8,6 @@ import { getOcrResult } from './ocr-operations';
 import { revalidatePath } from 'next/cache';
 import { getCurrentUser } from '@/lib/actions/user.actions';
 import PDFDocument from 'pdfkit';
-import * as docx from 'docx';
 import { Packer, Document, Paragraph, TextRun } from 'docx';
 
 /**
@@ -145,7 +144,6 @@ export async function exportOcrAsDocx(
  */
 async function createPdf(text: string, title: string): Promise<Buffer> {
   // Always use PDFKit for server-side PDF generation
-  // Do not try to use jsPDF as it uses browser APIs
   try {
     // Create a PDF document using PDFKit (Node.js compatible)
     const doc = new PDFDocument();
@@ -205,60 +203,66 @@ async function createPdf(text: string, title: string): Promise<Buffer> {
  * Create a DOCX buffer from OCR text
  */
 async function createDocx(text: string, title: string): Promise<Buffer> {
-  // Create paragraphs from text (split by newlines)
-  const paragraphs = text.split('\n').map(line => {
-    return new Paragraph({
+  try {
+    // Create paragraphs from text (split by newlines)
+    const paragraphs = text.split('\n').map(line => {
+      return new Paragraph({
+        children: [
+          new TextRun({
+            text: line || " ", // Ensure empty lines have at least a space
+            size: 24 // 12pt font
+          })
+        ]
+      });
+    });
+    
+    // Create title paragraph
+    const titleParagraph = new Paragraph({
       children: [
         new TextRun({
-          text: line,
-          size: 24 // 12pt font
+          text: title,
+          bold: true,
+          size: 36 // 18pt font
         })
+      ],
+      spacing: {
+        after: 200 // Space after title
+      }
+    });
+    
+    // Create date paragraph - use ISO string which is safe on server
+    const currentDate = new Date().toISOString().split('T')[0];
+    const dateParagraph = new Paragraph({
+      children: [
+        new TextRun({
+          text: `Created on: ${currentDate}`,
+          size: 20 // 10pt font
+        })
+      ],
+      spacing: {
+        after: 400 // Space after date
+      }
+    });
+    
+    // Create the document
+    const doc = new Document({
+      sections: [
+        {
+          properties: {},
+          children: [
+            titleParagraph,
+            dateParagraph,
+            ...paragraphs
+          ]
+        }
       ]
     });
-  });
-  
-  // Create title paragraph
-  const titleParagraph = new Paragraph({
-    children: [
-      new TextRun({
-        text: title,
-        bold: true,
-        size: 36 // 18pt font
-      })
-    ],
-    spacing: {
-      after: 200 // Space after title
-    }
-  });
-  
-  // Create date paragraph - use ISO string to avoid navigator dependency
-  const currentDate = new Date().toISOString().split('T')[0];
-  const dateParagraph = new Paragraph({
-    children: [
-      new TextRun({
-        text: `Created on: ${currentDate}`,
-        size: 20 // 10pt font
-      })
-    ],
-    spacing: {
-      after: 400 // Space after date
-    }
-  });
-  
-  // Create the document
-  const doc = new Document({
-    sections: [
-      {
-        properties: {},
-        children: [
-          titleParagraph,
-          dateParagraph,
-          ...paragraphs
-        ]
-      }
-    ]
-  });
-  
-  // Generate the buffer
-  return await Packer.toBuffer(doc);
+    
+    // Generate the buffer
+    return await Packer.toBuffer(doc);
+  } catch (error) {
+    console.error('Error creating DOCX, falling back to text buffer:', error);
+    const content = `${title}\n\nCreated on: ${new Date().toISOString().split('T')[0]}\n\n${text}`;
+    return Buffer.from(content, 'utf-8');
+  }
 }
